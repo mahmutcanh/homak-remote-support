@@ -1,0 +1,18 @@
+{
+  "cookies": [],
+  "origins": [
+    {
+      "origin": "https://remote.homaklab.com",
+      "localStorage": [
+        {
+          "name": "homak_tech_info",
+          "value": "{\"id\":\"86313dfe-2ac9-4b32-9e85-7d5dbe71d31e\",\"username\":\"mahmut.homak\",\"displayName\":\"Mahmut Homak\",\"department\":\"IT Support & Infrastructure Lead\",\"role\":\"ADMIN\"}"
+        },
+        {
+          "name": "homak_tech_token",
+          "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4NjMxM2RmZS0yYWM5LTRiMzItOWU4NS03ZDVkYmU3MWQzMWUiLCJ1c2VybmFtZSI6Im1haG11dC5ob21hayIsImRpc3BsYXlOYW1lIjoiTWFobXV0IEhvbWFrIiwicm9sZSI6IkFETUlOIiwiaWF0IjoxNzg5ODUwNTk0LCJleHAiOjE3ODk4OTM3OTR9.6yWOoZ2vKpTSErHq5tSkufi_00E3hMRTa2dho2nzI6g"
+        }
+      ]
+    }
+  ]
+}
