@@ -20,6 +20,15 @@ interface ChatMessage {
   timestamp: string;
 }
 
+interface DisplayItem {
+  index: number;
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  isPrimary: boolean;
+}
+
 export default function RemoteDesktopViewer({
   sessionId,
   supportCode,
@@ -28,6 +37,8 @@ export default function RemoteDesktopViewer({
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [fps, setFps] = useState<number>(0);
+  const [displays, setDisplays] = useState<DisplayItem[]>([]);
+  const [activeDisplayIndex, setActiveDisplayIndex] = useState<number>(0);
   const [resolution, setResolution] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -182,6 +193,14 @@ export default function RemoteDesktopViewer({
       }
     });
 
+    socket.on("remote:displays", (data: { sessionId: string; displays: DisplayItem[]; activeDisplayIndex: number }) => {
+      if (data.sessionId !== sessionId) return;
+      if (data.displays && Array.isArray(data.displays)) {
+        setDisplays(data.displays);
+        setActiveDisplayIndex(data.activeDisplayIndex ?? 0);
+      }
+    });
+
     socket.on("tech:presence-changed", (data: { sessionId: string; techCount: number }) => {
       if (data.sessionId !== sessionId) return;
       setTechCount(data.techCount);
@@ -330,6 +349,12 @@ export default function RemoteDesktopViewer({
     const next = !isInputBlocked;
     setIsInputBlocked(next);
     socketRef.current?.emit("remote:control", { sessionId, action: "block-input", enable: next });
+  };
+
+    const switchDisplay = (displayIndex: number) => {
+    if (!socketRef.current) return;
+    setActiveDisplayIndex(displayIndex);
+    socketRef.current.emit("remote:switch-display", { sessionId, displayIndex });
   };
 
   const togglePrivacyScreen = () => {
@@ -482,30 +507,42 @@ export default function RemoteDesktopViewer({
     if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
       return;
     }
+
+    if (["Tab", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+      e.preventDefault();
+    }
+
+    // Direct unicode single character input (letters, numbers, symbols, Turkish characters)
+    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      socketRef.current.emit("remote:control", { sessionId, action: "char", char: e.key });
+      return;
+    }
+
     const mapping: Record<string, string> = {
-      Enter: "{ENTER}",
-      Escape: "{ESC}",
-      Backspace: "{BACKSPACE}",
-      Tab: "{TAB}",
-      Delete: "{DELETE}",
-      ArrowUp: "{UP}",
-      ArrowDown: "{DOWN}",
-      ArrowLeft: "{LEFT}",
-      ArrowRight: "{RIGHT}",
-      Home: "{HOME}",
-      End: "{END}",
-      PageUp: "{PGUP}",
-      PageDown: "{PGDN}",
-      " ": " ",
+      Enter: "enter",
+      Escape: "esc",
+      Backspace: "backspace",
+      Tab: "tab",
+      Delete: "delete",
+      ArrowUp: "up",
+      ArrowDown: "down",
+      ArrowLeft: "left",
+      ArrowRight: "right",
+      Home: "home",
+      End: "end",
+      PageUp: "pageup",
+      PageDown: "pagedown",
+      " ": "space",
     };
 
-    let key = mapping[e.key];
-    if (!key) {
-      if (e.key.length === 1) key = e.key;
+    if (mapping[e.key]) {
+      e.preventDefault();
+      socketRef.current.emit("remote:control", { sessionId, action: "special-key", key: mapping[e.key] });
+      return;
     }
-    if (!key) return;
-    e.preventDefault();
-    socketRef.current.emit("remote:control", { sessionId, action: "keypress", key });
+
+    // Otherwise send keypress
+    socketRef.current.emit("remote:control", { sessionId, action: "keypress", key: e.key });
   };
 
   const toggleFullscreen = () => {
@@ -561,6 +598,42 @@ export default function RemoteDesktopViewer({
                 CANLI KAYIT
               </span>
             </>
+          )}
+
+          {/* Multi-Monitor Detection & Switcher */}
+          {displays.length > 1 ? (
+            <div className="flex items-center gap-1 bg-slate-950/90 border border-slate-700/80 rounded-xl p-0.5 px-1.5 shadow-xs">
+              <span className="flex items-center gap-1 text-[10px] font-black uppercase text-cyan-400 pl-0.5 pr-1">
+                <span className="material-symbols-outlined text-[14px]">devices</span>
+                <span>{displays.length} Ekran:</span>
+              </span>
+              <div className="flex items-center gap-1">
+                {displays.map((d) => (
+                  <button
+                    key={d.index}
+                    onClick={() => switchDisplay(d.index)}
+                    title={`${d.name} (${d.width}x${d.height}) yayınına geç`}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      activeDisplayIndex === d.index
+                        ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/40 border border-cyan-400"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">
+                      {d.isPrimary ? "star" : "monitor"}
+                    </span>
+                    <span>{d.name.replace(" (Birincil)", "")}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            displays.length === 1 && (
+              <div className="hidden lg:flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-800/60 text-slate-400 border border-slate-700/50">
+                <span className="material-symbols-outlined text-[13px]">monitor</span>
+                <span>1 Monitör</span>
+              </div>
+            )
           )}
           {connectionState === "waiting_consent" && (
             <span className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono">
