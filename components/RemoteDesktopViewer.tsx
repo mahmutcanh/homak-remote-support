@@ -43,17 +43,10 @@ export default function RemoteDesktopViewer({
 
   const displayListToRender = useMemo(() => {
     if (displays && displays.length > 0) {
-      if (displays.length === 1) {
-        return [
-          displays[0],
-          { index: 1, id: 999, name: "2. Ekran", width: 0, height: 0, isPrimary: false }
-        ];
-      }
       return displays;
     }
     return [
-      { index: 0, id: 1, name: "1. Ekran (Ana)", width: 0, height: 0, isPrimary: true },
-      { index: 1, id: 2, name: "2. Ekran", width: 0, height: 0, isPrimary: false }
+      { index: 0, id: 1, name: "1. Ekran (Ana)", width: 0, height: 0, isPrimary: true }
     ];
   }, [displays]);
 
@@ -387,6 +380,10 @@ export default function RemoteDesktopViewer({
 
   const switchDisplay = (displayIndex: number) => {
     if (!socketRef.current) return;
+    if (displays.length > 0 && displayIndex >= displays.length) {
+      alert(`İstemci bilgisayarda yalnızca ${displays.length} adet monitör bağlı. ${displayIndex + 1}. ekran bulunamadı.`);
+      return;
+    }
     setActiveDisplayIndex(displayIndex);
     socketRef.current.emit("remote:switch-display", { sessionId, displayIndex });
     socketRef.current.emit("remote:control", { sessionId, action: "switch-display", displayIndex, screenIndex: displayIndex });
@@ -648,49 +645,7 @@ export default function RemoteDesktopViewer({
         {/* Center & Right: Action Controls */}
         <div className="flex items-center gap-1.5 flex-wrap">
           
-        {/* Floating Monitor Switcher Pill right on top of the remote video canvas */}
-        {connectionState === "connected" && (
-          <div className="absolute top-3 z-30 flex items-center gap-1.5 bg-slate-950/95 backdrop-blur-md border border-cyan-500/60 shadow-2xl shadow-black/90 rounded-2xl p-1 px-3 transition-all hover:scale-[1.02]">
-            <span className="material-symbols-outlined text-cyan-400 text-[18px]">desktop_windows</span>
-            <span className="text-xs font-black text-cyan-300 mr-1 hidden sm:inline">Monitör:</span>
-            {displayListToRender.map((disp, idx) => {
-              const dispIdx = typeof disp.index === "number" ? disp.index : idx;
-              const isActive = activeDisplayIndex === dispIdx;
-              return (
-                <button
-                  key={dispIdx}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    switchDisplay(dispIdx);
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    isActive
-                      ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
-                      : "bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[13px]">
-                    {disp.isPrimary ? "star" : "monitor"}
-                  </span>
-                  <span>{dispIdx + 1}. Ekran</span>
-                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
-                </button>
-              );
-            })}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                refreshDisplays();
-              }}
-              title="Monitörleri Yenile"
-              className="p-1 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors cursor-pointer"
-            >
-              <span className={`material-symbols-outlined text-[15px] ${isRefreshingDisplays ? "animate-spin text-cyan-400" : ""}`}>
-                sync
-              </span>
-            </button>
-          </div>
-        )}
+
 
         {connectionState === "idle" && (
             <button
@@ -930,49 +885,7 @@ export default function RemoteDesktopViewer({
       >
         {/* State: Idle */}
         
-        {/* Floating Monitor Switcher Pill right on top of the remote video canvas */}
-        {connectionState === "connected" && (
-          <div className="absolute top-3 z-30 flex items-center gap-1.5 bg-slate-950/95 backdrop-blur-md border border-cyan-500/60 shadow-2xl shadow-black/90 rounded-2xl p-1 px-3 transition-all hover:scale-[1.02]">
-            <span className="material-symbols-outlined text-cyan-400 text-[18px]">desktop_windows</span>
-            <span className="text-xs font-black text-cyan-300 mr-1 hidden sm:inline">Monitör:</span>
-            {displayListToRender.map((disp, idx) => {
-              const dispIdx = typeof disp.index === "number" ? disp.index : idx;
-              const isActive = activeDisplayIndex === dispIdx;
-              return (
-                <button
-                  key={dispIdx}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    switchDisplay(dispIdx);
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    isActive
-                      ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
-                      : "bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[13px]">
-                    {disp.isPrimary ? "star" : "monitor"}
-                  </span>
-                  <span>{dispIdx + 1}. Ekran</span>
-                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
-                </button>
-              );
-            })}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                refreshDisplays();
-              }}
-              title="Monitörleri Yenile"
-              className="p-1 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors cursor-pointer"
-            >
-              <span className={`material-symbols-outlined text-[15px] ${isRefreshingDisplays ? "animate-spin text-cyan-400" : ""}`}>
-                sync
-              </span>
-            </button>
-          </div>
-        )}
+
 
         {connectionState === "idle" && (
           <div className="flex flex-col items-center gap-4 p-8 text-center max-w-md animate-fadeIn">
