@@ -24,10 +24,10 @@ type ToastState = {
 };
 
 function formatWait(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+  if (seconds < 60) return `${seconds} sn`;
+  const m = Math.floor(seconds / 60);
   const s = seconds % 60;
-  return [h, m, s].map((v) => v.toString().padStart(2, "0")).join(":");
+  return `${m} dk ${s} sn`;
 }
 
 export default function SupportQueuePage() {
@@ -39,7 +39,6 @@ export default function SupportQueuePage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPin, setModalPin] = useState("");
   const [modalCopyText, setModalCopyText] = useState("Kodu Kopyala");
-  const [copyBtnText, setCopyBtnText] = useState("Kopyala");
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<ToastState>({
     message: "",
@@ -79,7 +78,7 @@ export default function SupportQueuePage() {
         return validItems[0]?.id ?? null;
       });
     } catch {
-      showToast("Kuyruk yüklenemedi. Bağlantıyı kontrol edin.", "error", true);
+      showToast("Kuyruk bilgisi güncellenemedi.", "error", true);
     }
   }, [showToast]);
 
@@ -105,10 +104,10 @@ export default function SupportQueuePage() {
               return [item, ...prev];
             });
             setSelectedId(item.id);
-            showToast(`[${item.supportCode}] Oturumuna davet edildiniz. Bağlantı kuruluyor...`, "person_add");
+            showToast(`[${item.supportCode}] Oturumu açıldı.`, "person_add");
           })
           .catch(() => {
-            showToast("Davet edilen oturum bulunamadı veya sonlandırılmış.", "error", true);
+            showToast("Oturum bulunamadı veya sonlandırılmış.", "error", true);
           });
       }
     }
@@ -160,15 +159,15 @@ export default function SupportQueuePage() {
   });
 
   const selectedItem =
-    queueItems.find((item) => item.id === selectedId) ??
     activeItems.find((item) => item.id === selectedId) ??
+    queueItems.find((item) => item.id === selectedId) ??
     null;
 
   const acceptSession = async (id: string, hostname: string | null) => {
     try {
       const updated = await apiAcceptSession(id, { technicianName: "Mahmut Homak" });
       showToast(
-        `Oturum kabul edildi! ${hostname ?? "Cihaz"} bağlantısı aktifleştirildi.`,
+        `${hostname || "Cihaz"} bağlantısı kabul edildi. Ekran açılıyor...`,
         "check_circle",
       );
       setActiveItems((prev) => {
@@ -185,30 +184,22 @@ export default function SupportQueuePage() {
   const rejectSession = async (id: string, code: string) => {
     try {
       await apiRejectSession(id);
-      showToast(`[${code}] Destek talebi reddedildi ve kuyruktan kaldırıldı.`, "cancel", true);
+      showToast(`[${code}] Destek talebi reddedildi.`, "cancel", true);
       refreshQueue();
     } catch {
       showToast("Talep reddedilemedi.", "cancel", true);
     }
   };
 
-  const acceptSelectedSession = () => {
-    if (!selectedItem) return;
-    acceptSession(selectedItem.id, selectedItem.deviceHostname);
-  };
-
-  const rejectSelectedSession = () => {
-    if (!selectedItem) return;
-    rejectSession(selectedItem.id, selectedItem.supportCode);
-  };
-
-  const terminateSelectedSession = async () => {
-    if (!selectedItem) return;
+  const terminateActiveSession = async (id: string, code: string) => {
     try {
-      await apiTerminateSession(selectedItem.id, { reason: "Teknisyen tarafından sonlandırıldı" });
-      showToast(`[${selectedItem.supportCode}] Oturum sonlandırıldı.`, "check_circle");
-      setActiveItems((prev) => prev.filter((item) => item.id !== selectedItem.id));
-      setSelectedId(null);
+      await apiTerminateSession(id, { reason: "Teknisyen tarafından sonlandırıldı" });
+      showToast(`[${code}] Oturum başarıyla sonlandırıldı.`, "check_circle");
+      setActiveItems((prev) => prev.filter((item) => item.id !== id));
+      if (selectedId === id) {
+        const remaining = activeItems.filter((item) => item.id !== id);
+        setSelectedId(remaining[0]?.id ?? null);
+      }
       refreshQueue();
     } catch {
       showToast("Oturum sonlandırılamadı.", "cancel", true);
@@ -219,15 +210,7 @@ export default function SupportQueuePage() {
     navigator.clipboard?.writeText(modalPin.replace(/\s+/g, "")).catch(() => {});
     setModalCopyText("Kopyalandı!");
     setTimeout(() => setModalCopyText("Kodu Kopyala"), 2000);
-    showToast(`Yeni destek kodu ${modalPin} kopyalandı.`);
-  };
-
-  const copyGeneratedPin = () => {
-    if (!modalPin) return;
-    navigator.clipboard?.writeText(modalPin.replace(/\s+/g, "")).catch(() => {});
-    setCopyBtnText("Kopyalandı!");
-    setTimeout(() => setCopyBtnText("Kopyala"), 2000);
-    showToast(`PIN ${modalPin} panoya kopyalandı.`);
+    showToast(`Destek kodu ${modalPin} kopyalandı.`);
   };
 
   const handleGenerateCode = async () => {
@@ -238,614 +221,339 @@ export default function SupportQueuePage() {
       setModalPin(`${raw.slice(0, 3)} ${raw.slice(3)}`);
       setModalOpen(true);
     } catch {
-      showToast("Kod üretilemedi. Lütfen tekrar deneyin.", "error", true);
+      showToast("Destek kodu üretilemedi.", "error", true);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRefresh = () => {
-    refreshQueue();
-    showToast(`Kuyruk yenilendi. ${queueItems.length} aktif istek hazır.`);
-  };
+  const activeSelectedSession = activeItems.find((item) => item.id === selectedId);
 
   return (
-    <>
+    <div className="min-h-screen bg-slate-50 flex">
       <TechnicianSidebar />
-      <div className="lg:pl-64">
+
+      <div className="flex-1 lg:pl-64 flex flex-col">
         <TechnicianHeader />
-        <main className="relative pt-16 bg-surface w-full px-gutter-desktop min-h-screen">
-          <div className="flex flex-col w-full">
-            {/* Active Incident / Sticky Alert Ribbon */}
-            <div className="mb-space-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-space-sm p-space-md rounded-xl bg-surface-container-low shadow-sm">
-              <div className="flex items-center gap-space-md">
-                <div className="relative flex items-center justify-center w-10 h-10 rounded-lg bg-primary-container text-on-primary shadow-sm">
-                  <span className="material-symbols-outlined text-[22px]">badge</span>
-                  <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-tertiary shadow-sm"></span>
-                </div>
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-space-xs">
-                    <span className="font-headline-sm text-headline-sm text-on-surface">Mahmut Homak</span>
-                    <span className="px-space-xs py-0.5 rounded-full bg-surface-container-highest text-on-surface-variant font-label-mono-sm text-label-mono-sm">
-                      IT Support &amp; IT Manager
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-space-sm text-outline font-body-sm text-body-sm">
-                    <span className="flex items-center gap-1">
-                      <span className="w-2 h-2 rounded-full bg-tertiary"></span>
-                      <span className="font-label-mono-sm text-label-mono-sm text-tertiary font-semibold">SOK-SESSION ACTIVE</span>
-                    </span>
-                    <span>•</span>
-                    <span className="font-label-mono-sm text-label-mono-sm">MFA-ED25519 VERIFIED</span>
-                    <span>•</span>
-                    <span>
-                      RBAC: <code className="font-label-mono-sm text-label-mono-sm text-primary font-semibold">homak.ops.tier3.all</code>
-                    </span>
-                  </div>
-                </div>
+
+        <main className="p-6 sm:p-8 max-w-[1400px] w-full mx-auto flex flex-col gap-6 pt-22">
+          {/* Top Title & Primary Actions */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-600">Canlı Destek Masası</span>
               </div>
-              {/* Live Telemetry Badge */}
-              <div className="flex items-center gap-space-sm bg-surface-container-lowest px-space-md py-space-xs rounded-lg shadow-sm">
-                <div className="flex flex-col items-end">
-                  <span className="font-label-mono-sm text-label-mono-sm text-outline">RELAY GATEWAY</span>
-                  <span className="font-label-mono-sm text-label-mono-sm text-tertiary font-semibold">IST-CORE-02</span>
-                </div>
-                <div className="h-6 w-px bg-surface-container-high"></div>
-                <div className="flex items-center gap-1 text-tertiary">
-                  <span className="material-symbols-outlined text-[18px]">lock</span>
-                  <span className="font-label-mono-sm text-label-mono-sm font-semibold">TLS 1.3 GCM</span>
-                </div>
+              <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+                Uzaktan Destek ve Oturum Yönetimi
+              </h1>
+              <p className="text-sm text-slate-500">
+                Gelen destek taleplerini tek tıkla onaylayabilir ve uzak bilgisayarı canlı olarak kontrol edebilirsiniz.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={refreshQueue}
+                className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-sm font-semibold transition-colors"
+                title="Kuyruğu Yenile"
+              >
+                <span className="material-symbols-outlined text-[18px]">refresh</span>
+                <span>Yenile</span>
+              </button>
+
+              <button
+                onClick={handleGenerateCode}
+                disabled={loading}
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold shadow-sm transition-all disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[20px]">add</span>
+                <span>Yeni Destek Kodu Üret</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 3 Metric Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Bekleyen Talepler</span>
+                <span className="text-3xl font-extrabold text-slate-900 mt-1">
+                  {queueItems.length}
+                </span>
+                <span className="text-xs text-slate-400 mt-0.5">Onay bekleyen müşteriler</span>
+              </div>
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${queueItems.length > 0 ? "bg-amber-50 text-amber-600" : "bg-slate-50 text-slate-400"}`}>
+                <span className="material-symbols-outlined text-[26px]">hourglass_top</span>
               </div>
             </div>
-            {/* Primary Header & Global Queue Actions */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-space-md mb-space-lg">
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center gap-space-sm">
-                  <span className="px-space-xs py-0.5 rounded bg-error-container text-on-error-container font-label-mono-sm text-label-mono-sm font-semibold tracking-wider">
-                    LIVE DISPATCH
-                  </span>
-                  <span className="font-label-mono-sm text-label-mono-sm text-outline">SEC-LEVEL-3 RESTRICTED</span>
-                </div>
-                <h1 className="font-headline-xl text-headline-xl text-on-surface tracking-tight">
-                  Support Queue{" "}
-                  <span className="font-headline-md text-headline-md text-outline font-normal">(Geçici Destek Talepleri)</span>
-                </h1>
-                <p className="font-body-md text-body-md text-on-surface-variant max-w-2xl">
-                  Son kullanıcı anlık erişim talepleri ve dinamik kriptografik eşleşme havuzu. Tüm oturumlar kurumsal audit
-                  loglarına ve video capture protokolüne tabidir.
-                </p>
+
+            <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Aktif Ekran Bağlantısı</span>
+                <span className="text-3xl font-extrabold text-slate-900 mt-1">
+                  {activeItems.length}
+                </span>
+                <span className="text-xs text-slate-400 mt-0.5">Şu an kontrol edilen cihaz</span>
               </div>
-              {/* Quick Action Controls */}
-              <div className="flex flex-wrap items-center gap-space-sm">
-                <button
-                  className="flex items-center gap-space-xs px-space-md py-space-sm rounded-lg bg-surface-container-low text-on-surface hover:bg-surface-container-high transition-colors shadow-sm font-action-btn text-action-btn"
-                  onClick={handleRefresh}
-                >
-                  <span className="material-symbols-outlined text-[18px]">sync</span>
-                  <span>Kuyruğu Yenile</span>
-                </button>
-                <button
-                  className="flex items-center gap-space-xs px-space-lg py-space-sm rounded-lg bg-primary-container text-on-primary hover:bg-primary transition-all shadow-md font-action-btn text-action-btn group disabled:opacity-60"
-                  onClick={handleGenerateCode}
-                  disabled={loading}
-                >
-                  <span className="material-symbols-outlined text-[20px] transition-transform group-hover:rotate-45">
-                    add_moderator
-                  </span>
-                  <span>Yeni Destek Kodu Üret (Generate Code)</span>
-                </button>
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${activeItems.length > 0 ? "bg-emerald-50 text-emerald-600" : "bg-slate-50 text-slate-400"}`}>
+                <span className="material-symbols-outlined text-[26px]">desktop_windows</span>
               </div>
             </div>
-            {/* Realtime KPI Metric Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-space-md mb-space-xl">
-              <div className="flex flex-col p-space-lg rounded-xl bg-surface-container-lowest shadow-sm relative overflow-hidden">
-                <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-error"></div>
-                <div className="flex items-center justify-between mb-space-sm">
-                  <span className="font-body-sm text-body-sm text-on-surface-variant uppercase tracking-wider font-semibold">
-                    Bekleyen Talepler
-                  </span>
-                  <span className="material-symbols-outlined text-error text-[22px]">pending_actions</span>
-                </div>
-                <div className="flex items-baseline gap-space-sm">
-                  <span className="font-headline-xl text-headline-xl text-on-surface font-bold">{queueItems.length}</span>
-                  <span className="px-space-xs py-0.5 rounded bg-error-container text-on-error-container font-label-mono-sm text-label-mono-sm font-semibold">
-                    Kritik Kuyruk
-                  </span>
-                </div>
-                <div className="mt-space-sm flex items-center gap-space-xs text-outline font-body-sm text-body-sm">
-                  <span className="material-symbols-outlined text-[16px] text-error">trending_up</span>
-                  <span>Gerçek zamanlı WebSocket akışı</span>
-                </div>
-              </div>
-              <div className="flex flex-col p-space-lg rounded-xl bg-surface-container-lowest shadow-sm relative overflow-hidden">
-                <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-primary-container"></div>
-                <div className="flex items-center justify-between mb-space-sm">
-                  <span className="font-body-sm text-body-sm text-on-surface-variant uppercase tracking-wider font-semibold">
-                    Seçili PIN
-                  </span>
-                  <span className="material-symbols-outlined text-primary-container text-[22px]">mimo</span>
-                </div>
-                <div className="flex items-baseline gap-space-sm">
-                  <span className="font-headline-xl text-headline-xl text-on-surface font-bold">
-                    {selectedItem?.supportCode ?? "—"}
-                  </span>
-                </div>
-                <div className="mt-space-sm flex items-center gap-space-xs text-outline font-body-sm text-body-sm">
-                  <span className="material-symbols-outlined text-[16px] text-tertiary">check_circle</span>
-                  <span>{selectedItem?.status ?? "Kuyrukta oturum yok"}</span>
-                </div>
-              </div>
-              <div className="flex flex-col p-space-lg rounded-xl bg-surface-container-lowest shadow-sm relative overflow-hidden">
-                <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-tertiary"></div>
-                <div className="flex items-center justify-between mb-space-sm">
-                  <span className="font-body-sm text-body-sm text-on-surface-variant uppercase tracking-wider font-semibold">
-                    Ortalama Bekleme
-                  </span>
-                  <span className="material-symbols-outlined text-tertiary text-[22px]">timer</span>
-                </div>
-                <div className="flex items-baseline gap-space-sm">
-                  <span className="font-headline-xl text-headline-xl text-on-surface font-bold">
-                    {queueItems.length > 0
-                      ? Math.round(queueItems.reduce((sum, i) => sum + i.waitSeconds, 0) / queueItems.length)
-                      : 0}{" "}
-                    <span className="text-headline-md font-normal text-on-surface-variant">sn</span>
-                  </span>
-                  <span className="px-space-xs py-0.5 rounded bg-tertiary-fixed text-on-tertiary-fixed-variant font-label-mono-sm text-label-mono-sm font-semibold">
-                    SLA: &lt;120 sn
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-col p-space-lg rounded-xl bg-surface-container-lowest shadow-sm relative overflow-hidden">
-                <div className="absolute right-0 top-0 bottom-0 w-1.5 bg-secondary-container"></div>
-                <div className="flex items-center justify-between mb-space-sm">
-                  <span className="font-body-sm text-body-sm text-on-surface-variant uppercase tracking-wider font-semibold">
-                    Bağlantı Durumu
-                  </span>
-                  <span className="material-symbols-outlined text-secondary-container text-[22px]">task_alt</span>
-                </div>
-                <div className="flex items-baseline gap-space-sm">
-                  <span className="font-headline-md text-headline-md text-on-surface font-bold">Canlı API</span>
-                </div>
-                <div className="mt-space-sm flex items-center gap-space-xs text-outline font-body-sm text-body-sm">
-                  <span className="material-symbols-outlined text-[16px]">verified_user</span>
-                  <span>support-api.homaklab.com</span>
-                </div>
-              </div>
-            </div>
-            {/* Main Interaction Section: Queue Table + Realtime Inspector Split Layout */}
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-space-lg items-start pb-space-xl">
-              {/* Table Container (8 Cols on XL) */}
-              <div className="xl:col-span-8 flex flex-col gap-space-md">
-                {/* Table Filter Bar */}
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-space-sm p-space-md rounded-xl bg-surface-container-lowest shadow-sm">
-                  <div className="flex items-center gap-space-sm flex-1">
-                    <span className="material-symbols-outlined text-outline text-[20px]">filter_list</span>
-                    <span className="font-headline-sm text-headline-sm text-on-surface">Bekleyen Oturum Talepleri</span>
-                    <span className="px-2 py-0.5 rounded-full bg-error-container text-on-error-container font-label-mono-sm text-label-mono-sm font-bold">
-                      {queueItems.length} Bekliyor
-                    </span>
-                  </div>
-                </div>
-                {/* Data Table Card */}
-                <div className="overflow-x-auto rounded-xl bg-surface-container-lowest shadow-sm">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-surface-container-low text-outline font-label-mono-sm text-label-mono-sm uppercase tracking-wider">
-                        <th className="py-space-md px-space-md font-semibold">Destek Kodu</th>
-                        <th className="py-space-md px-space-md font-semibold">Cihaz / Hostname</th>
-                        <th className="py-space-md px-space-md font-semibold">IP Adresi</th>
-                        <th className="py-space-md px-space-md font-semibold">Bekleme</th>
-                        <th className="py-space-md px-space-md font-semibold">İstemci Versiyon</th>
-                        <th className="py-space-md px-space-md font-semibold">Durum</th>
-                        <th className="py-space-md px-space-md font-semibold text-right">Erişim Onayı</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y-0 text-on-surface font-body-sm text-body-sm">
-                      {queueItems.length === 0 && (
-                        <tr>
-                          <td className="py-space-lg px-space-md text-center text-on-surface-variant" colSpan={7}>
-                            Şu anda bekleyen destek talebi yok.
-                          </td>
-                        </tr>
-                      )}
-                      {queueItems.map((item) => {
-                        const isSelected = selectedId === item.id;
-                        const urgent = item.waitSeconds > 90 && item.status === "WAITING_TECHNICIAN";
-                        const isWaiting = item.status === "WAITING_TECHNICIAN";
-                        const isEnded = item.status === "ENDED" || item.status === "EXPIRED" || item.status === "REJECTED";
 
-                        return (
-                          <tr
-                            key={item.id}
-                            className={`queue-row cursor-pointer transition-colors ${
-                              isSelected ? "bg-surface-container/60" : "hover:bg-surface-container/50"
-                            } ${isEnded ? "opacity-65" : ""}`}
-                            onClick={() => setSelectedId(item.id)}
-                          >
-                            <td className="py-space-md px-space-md">
-                              <div className="flex items-center gap-space-xs">
-                                <span className={`w-2 h-2 rounded-full ${isWaiting ? (urgent ? "bg-error animate-ping" : "bg-tertiary") : "bg-outline"}`}></span>
-                                <span className="font-label-mono-lg text-label-mono-lg font-bold text-primary tracking-widest bg-primary-fixed/40 px-2 py-0.5 rounded">
-                                  {item.supportCode}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-space-md px-space-md">
-                              <div className="flex flex-col">
-                                <span className="font-semibold text-on-surface">{item.deviceHostname ?? "Bilinmiyor"}</span>
-                                <span className="font-label-mono-sm text-label-mono-sm text-outline">{item.department ?? "-"}</span>
-                              </div>
-                            </td>
-                            <td className="py-space-md px-space-md font-label-mono-sm text-label-mono-sm">
-                              <span className="px-1.5 py-0.5 rounded bg-surface-container text-on-surface">
-                                {item.deviceIp ?? "-"}
-                              </span>
-                            </td>
-                            <td className="py-space-md px-space-md">
-                              <div
-                                className={`flex items-center gap-1 font-label-mono-sm text-label-mono-sm font-semibold ${
-                                  urgent ? "text-error" : "text-on-surface-variant"
-                                }`}
-                              >
-                                <span className="material-symbols-outlined text-[16px]">
-                                  {urgent ? "warning" : "schedule"}
-                                </span>
-                                <span>{isWaiting ? formatWait(item.waitSeconds) : "-"}</span>
-                              </div>
-                            </td>
-                            <td className="py-space-md px-space-md">
-                              <div className="flex items-center gap-1 font-label-mono-sm text-label-mono-sm">
-                                <span className="material-symbols-outlined text-[16px] text-primary">terminal</span>
-                                <span>{item.clientVersion ?? "-"}</span>
-                              </div>
-                            </td>
-                            <td className="py-space-md px-space-md">
-                              <span
-                                className={`inline-flex items-center gap-1 px-space-xs py-0.5 rounded font-label-mono-sm text-label-mono-sm font-semibold ${
-                                  isWaiting
-                                    ? "bg-error-container text-on-error-container"
-                                    : "bg-surface-container-high text-on-surface-variant"
-                                }`}
-                              >
-                                <span
-                                  className={`w-1.5 h-1.5 rounded-full ${
-                                    isWaiting ? "bg-error" : "bg-outline"
-                                  }`}
-                                ></span>
-                                {item.status}
-                              </span>
-                            </td>
-                            <td className="py-space-md px-space-md text-right">
-                              {isWaiting ? (
-                                <div className="flex items-center justify-end gap-space-xs">
-                                  <button
-                                    className="flex items-center gap-1 px-space-sm py-1.5 rounded-lg bg-tertiary-container hover:bg-tertiary text-on-tertiary font-action-btn text-action-btn shadow-sm transition-all"
-                                    title="support.accept yetkisi ile oturumu devral"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      acceptSession(item.id, item.deviceHostname);
-                                    }}
-                                  >
-                                    <span className="material-symbols-outlined text-[16px]">login</span>
-                                    <span>Kabul Et</span>
-                                  </button>
-                                  <button
-                                    className="p-1.5 rounded-lg bg-surface-container-high hover:bg-error-container hover:text-on-error-container text-outline transition-colors"
-                                    title="Talebi reddet / iptal et"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      rejectSession(item.id, item.supportCode);
-                                    }}
-                                  >
-                                    <span className="material-symbols-outlined text-[16px]">close</span>
-                                  </button>
-                                </div>
-                              ) : (
-                                <span className="font-label-mono-sm text-label-mono-sm text-outline font-semibold">
-                                  Sonlandı
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {/* RBAC Security Clearance Banner below queue */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-space-sm p-space-md rounded-xl bg-surface-container-low">
-                  <div className="flex items-center gap-space-sm">
-                    <span className="material-symbols-outlined text-primary text-[20px]">admin_panel_settings</span>
-                    <div className="flex flex-col">
-                      <span className="font-label-mono-sm text-label-mono-sm font-semibold text-on-surface">
-                        RBAC AUTHORITY MATRIX ENFORCED
-                      </span>
-                      <span className="font-body-sm text-body-sm text-outline">
-                        Oturum kabul yetkisi:{" "}
-                        <code className="font-label-mono-sm text-label-mono-sm text-primary">support.accept</code> aktif ve
-                        Mahmut Homak adına loglanmaktadır.
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-space-xs">
-                    <span className="w-2 h-2 rounded-full bg-tertiary"></span>
-                    <span className="font-label-mono-sm text-label-mono-sm text-tertiary font-semibold">
-                      SOVEREIGN SESSION AUDIT ACTIVE
-                    </span>
-                  </div>
-                </div>
+            <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Ortalama Bekleme</span>
+                <span className="text-3xl font-extrabold text-slate-900 mt-1">
+                  {queueItems.length > 0
+                    ? formatWait(Math.round(queueItems.reduce((sum, i) => sum + i.waitSeconds, 0) / queueItems.length))
+                    : "0 sn"}
+                </span>
+                <span className="text-xs text-slate-400 mt-0.5">Müşteri ortalama yanıt süresi</span>
               </div>
-              {/* Inspector / Request Preview Panel (4 Cols on XL) */}
-              <div className="xl:col-span-4 flex flex-col gap-space-md">
-                <div className="flex flex-col p-space-lg rounded-xl bg-surface-container-lowest shadow-sm">
-                  <div className="flex items-center justify-between pb-space-sm mb-space-sm border-b-0">
-                    <div className="flex items-center gap-space-xs">
-                      <span className="material-symbols-outlined text-primary text-[20px]">preview</span>
-                      <span className="font-headline-sm text-headline-sm text-on-surface">Talep Detay İncelemesi</span>
-                    </div>
-                    <span className="px-space-xs py-0.5 rounded bg-tertiary-fixed text-on-tertiary-fixed-variant font-label-mono-sm text-label-mono-sm font-semibold">
-                      WEBSOCKET CANLI
-                    </span>
-                  </div>
-                  {/* Selected Code Display Banner */}
-                  <div className="p-space-md rounded-xl bg-primary-fixed/30 flex flex-col items-center justify-center text-center gap-1 mb-space-md">
-                    <span className="font-label-mono-sm text-label-mono-sm text-primary uppercase font-bold tracking-wider">
-                      Seçili PIN Kodu
-                    </span>
-                    <span className="font-headline-xl text-headline-xl text-primary font-extrabold tracking-widest font-label-mono-lg">
-                      {selectedItem?.supportCode ?? "------"}
-                    </span>
-                    <span className="font-headline-sm text-headline-sm text-on-surface font-semibold">
-                      {selectedItem?.deviceHostname ?? "Kuyrukta seçili oturum yok"}
-                    </span>
-                    <span className="font-body-sm text-body-sm text-on-surface-variant">{selectedItem?.department ?? ""}</span>
-                  </div>
-                  {/* Verification Checklist */}
-                  <div className="flex flex-col gap-space-sm mb-space-md">
-                    <span className="font-label-mono-sm text-label-mono-sm text-outline font-semibold uppercase">
-                      Oturum Bilgisi
-                    </span>
-                    <div className="flex items-center justify-between p-space-sm rounded-lg bg-surface-container-low">
-                      <div className="flex items-center gap-space-xs">
-                        <span className="material-symbols-outlined text-tertiary text-[18px]">verified</span>
-                        <span className="font-body-sm text-body-sm text-on-surface">Durum</span>
-                      </div>
-                      <span className="font-label-mono-sm text-label-mono-sm text-tertiary font-bold">
-                        {selectedItem?.status ?? "-"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between p-space-sm rounded-lg bg-surface-container-low">
-                      <div className="flex items-center gap-space-xs">
-                        <span className="material-symbols-outlined text-tertiary text-[18px]">cloud_done</span>
-                        <span className="font-body-sm text-body-sm text-on-surface">IP Adresi</span>
-                      </div>
-                      <span className="font-label-mono-sm text-label-mono-sm text-on-surface font-semibold">
-                        {selectedItem?.deviceIp ?? "-"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between p-space-sm rounded-lg bg-surface-container-low">
-                      <div className="flex items-center gap-space-xs">
-                        <span className="material-symbols-outlined text-outline text-[18px]">schedule</span>
-                        <span className="font-body-sm text-body-sm text-on-surface">Oluşturulma</span>
-                      </div>
-                      <span className="font-label-mono-sm text-label-mono-sm text-outline">
-                        {selectedItem ? new Date(selectedItem.createdAt).toLocaleTimeString("tr-TR") : "-"}
-                      </span>
-                    </div>
-                  </div>
-                  {/* Homak Native Remote Desktop Panel with Multi-Session Tab Bar */}
-                  <div className="flex flex-col gap-space-xs mb-space-md">
-                    <div className="flex items-center justify-between">
-                      <span className="font-label-mono-sm text-label-mono-sm text-outline font-semibold uppercase">
-                        Homak Native Uzak Masaüstü {activeItems.length > 0 ? `(${activeItems.length} Aktif Oturum)` : ""}
-                      </span>
-                    </div>
-
-                    {/* Multi-Session Tab Bar */}
-                    {activeItems.length > 0 && (
-                      <div className="flex items-center gap-1 overflow-x-auto p-1 bg-surface-container-low rounded-lg mb-1">
-                        {activeItems.map((item) => {
-                          const isActive = selectedId === item.id;
-                          return (
-                            <div
-                              key={item.id}
-                              onClick={() => setSelectedId(item.id)}
-                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-label-mono-sm text-label-mono-sm cursor-pointer transition-all ${
-                                isActive
-                                  ? "bg-primary text-on-primary font-bold shadow-xs"
-                                  : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
-                              }`}
-                            >
-                              <span className="material-symbols-outlined text-[14px]">desktop_windows</span>
-                              <span className="truncate max-w-[100px]">{item.deviceHostname || item.supportCode}</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setActiveItems((prev) => prev.filter((x) => x.id !== item.id));
-                                  if (selectedId === item.id) {
-                                    const remaining = activeItems.filter((x) => x.id !== item.id);
-                                    setSelectedId(remaining[0]?.id ?? null);
-                                  }
-                                }}
-                                title="Sekmeyi Kapat"
-                                className="hover:opacity-80 p-0.5"
-                              >
-                                <span className="material-symbols-outlined text-[12px]">close</span>
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {/* Render all active sessions in background, show only selected */}
-                    {activeItems.map((item) => (
-                      <div key={item.id} className={selectedId === item.id ? "block" : "hidden"}>
-                        <RemoteDesktopViewer
-                          sessionId={item.id}
-                          supportCode={item.supportCode}
-                          deviceHostname={item.deviceHostname}
-                        />
-                      </div>
-                    ))}
-
-                    {/* Empty State when no active session selected */}
-                    {activeItems.length === 0 && (
-                      <div className="flex items-center gap-space-sm p-space-md rounded-lg bg-surface-container-low text-on-surface-variant">
-                        <span className="material-symbols-outlined text-[18px] text-outline">desktop_access_disabled</span>
-                        <span className="font-body-sm text-body-sm font-medium">
-                          Lütfen uzak masaüstü bağlantısı başlatmak için soldaki listeden bir oturum seçin ve &apos;Kabul Et&apos; butonuna basın.
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Session Elevation Mode Selection */}
-                  <div className="flex flex-col gap-space-xs mb-space-md">
-                    <label className="font-label-mono-sm text-label-mono-sm text-outline font-semibold uppercase">
-                      Erişim Ayrıcalık Seviyesi
-                    </label>
-                    <div className="grid grid-cols-2 gap-space-xs">
-                      <button
-                        className={`flex flex-col items-center justify-center p-space-sm rounded-lg font-action-btn text-action-btn transition-all ${
-                          permMode === "full"
-                            ? "bg-primary-container text-on-primary shadow-sm"
-                            : "bg-surface-container-low hover:bg-surface-container-high text-on-surface"
-                        }`}
-                        onClick={() => setPermMode("full")}
-                      >
-                        <span className="material-symbols-outlined text-[18px]">mouse</span>
-                        <span className="font-body-sm text-body-sm font-semibold">Tam Kontrol</span>
-                      </button>
-                      <button
-                        className={`flex flex-col items-center justify-center p-space-sm rounded-lg font-action-btn text-action-btn transition-all ${
-                          permMode === "view"
-                            ? "bg-primary-container text-on-primary shadow-sm"
-                            : "bg-surface-container-low hover:bg-surface-container-high text-on-surface"
-                        }`}
-                        onClick={() => setPermMode("view")}
-                      >
-                        <span className="material-symbols-outlined text-[18px]">visibility</span>
-                        <span className="font-body-sm text-body-sm">Salt Okunur</span>
-                      </button>
-                    </div>
-                  </div>
-                  {/* Big Acceptance Trigger CTA */}
-                  <div className="flex flex-col gap-space-xs">
-                    {selectedItem?.status === "ACTIVE" ? (
-                      <>
-                        <div className="w-full flex items-center justify-center gap-space-xs py-space-sm rounded-xl bg-tertiary-fixed/30 text-on-tertiary-fixed-variant font-action-btn text-action-btn font-bold">
-                          <span className="material-symbols-outlined text-[20px]">check_circle</span>
-                          <span>Oturum Aktif</span>
-                        </div>
-                        <button
-                          className="w-full flex items-center justify-center gap-space-xs py-space-sm rounded-xl bg-surface-container-low hover:bg-error-container hover:text-on-error-container text-outline font-action-btn text-action-btn transition-colors"
-                          onClick={terminateSelectedSession}
-                        >
-                          <span className="material-symbols-outlined text-[18px]">stop_circle</span>
-                          <span>Oturumu Sonlandır</span>
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          className="w-full flex items-center justify-center gap-space-xs py-space-md rounded-xl bg-tertiary-container hover:bg-tertiary text-on-tertiary font-headline-sm text-headline-sm font-bold shadow-md transition-all disabled:opacity-50"
-                          onClick={acceptSelectedSession}
-                          disabled={!selectedItem}
-                        >
-                          <span className="material-symbols-outlined text-[24px]">cast_connected</span>
-                          <span>Oturumu Başlat / Kabul Et</span>
-                        </button>
-                        <button
-                          className="w-full flex items-center justify-center gap-space-xs py-space-sm rounded-xl bg-surface-container-low hover:bg-error-container hover:text-on-error-container text-outline font-action-btn text-action-btn transition-colors disabled:opacity-50"
-                          onClick={rejectSelectedSession}
-                          disabled={!selectedItem}
-                        >
-                          <span className="material-symbols-outlined text-[18px]">cancel</span>
-                          <span>Talebi Kuyruktan Kaldır (Reject)</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <span className="material-symbols-outlined text-[26px]">timer</span>
               </div>
             </div>
           </div>
-          {/* Interactive Modal for Code Generation */}
-          {modalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-inverse-surface/40 backdrop-blur-md p-gutter">
-              <div className="w-full max-w-md bg-surface-container-lowest rounded-xl shadow-xl p-space-xl flex flex-col gap-space-md transform transition-all">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-space-xs text-primary">
-                    <span className="material-symbols-outlined text-[24px]">vpn_key</span>
-                    <span className="font-headline-sm text-headline-sm text-on-surface font-bold">Yeni Destek Kodu Üretildi</span>
-                  </div>
-                  <button
-                    className="p-1 rounded-lg text-outline hover:bg-surface-container transition-colors"
-                    onClick={() => setModalOpen(false)}
-                  >
-                    <span className="material-symbols-outlined text-[20px]">close</span>
-                  </button>
-                </div>
-                <div className="p-space-lg rounded-xl bg-primary-fixed/30 flex flex-col items-center justify-center gap-1">
-                  <span className="font-label-mono-sm text-label-mono-sm text-primary uppercase font-bold">
-                    15 Dakika Geçerli Destek Kodu
-                  </span>
-                  <span className="font-headline-xl text-headline-xl text-primary font-extrabold tracking-widest font-label-mono-lg my-space-xs">
-                    {modalPin}
-                  </span>
-                  <span className="font-body-sm text-body-sm text-on-surface-variant text-center">
-                    İstemciye girildiğinde otomatik onay talebi panoya düşecektir.
-                  </span>
-                </div>
-                <div className="flex flex-col gap-space-xs">
-                  <div className="flex items-center justify-between text-outline font-body-sm text-body-sm">
-                    <span>Oluşturan:</span>
-                    <span className="text-on-surface font-semibold">Mahmut Homak</span>
-                  </div>
-                  <div className="flex items-center justify-between text-outline font-body-sm text-body-sm">
-                    <span>Kaynak:</span>
-                    <span className="text-on-surface font-label-mono-sm text-label-mono-sm">homak-support-api</span>
+
+          {/* ACTIVE REMOTE SESSIONS WORKSPACE */}
+          {activeItems.length > 0 && (
+            <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-sm flex flex-col gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <div className="flex flex-col">
+                    <h2 className="text-lg font-bold text-slate-900">Canlı Uzak Masaüstü Ekranı</h2>
+                    <span className="text-xs text-slate-500">Müşteri bilgisayarı gerçek zamanlı görüntüleniyor</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-space-sm pt-space-sm">
-                  <button
-                    className="flex-1 flex items-center justify-center gap-1 py-space-sm rounded-lg bg-primary-container text-on-primary font-action-btn text-action-btn shadow-sm hover:bg-primary transition-all"
-                    onClick={copyModalPin}
-                  >
-                    <span className="material-symbols-outlined text-[18px]">content_copy</span>
-                    <span>{modalCopyText}</span>
-                  </button>
-                  <button
-                    className="px-space-lg py-space-sm rounded-lg bg-surface-container text-on-surface font-action-btn text-action-btn hover:bg-surface-container-high transition-colors"
-                    onClick={() => setModalOpen(false)}
-                  >
-                    Kapat
-                  </button>
+
+                <div className="flex items-center gap-2">
+                  {/* Mode Selector */}
+                  <div className="flex items-center bg-slate-100 p-1 rounded-xl">
+                    <button
+                      onClick={() => setPermMode("full")}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                        permMode === "full" ? "bg-white text-blue-600 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Tam Kontrol
+                    </button>
+                    <button
+                      onClick={() => setPermMode("view")}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                        permMode === "view" ? "bg-white text-blue-600 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Salt Okunur
+                    </button>
+                  </div>
+
+                  {activeSelectedSession && (
+                    <button
+                      onClick={() => terminateActiveSession(activeSelectedSession.id, activeSelectedSession.supportCode)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold transition-colors"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">call_end</span>
+                      <span>Oturumu Sonlandır</span>
+                    </button>
+                  )}
                 </div>
-                <button
-                  className="flex items-center justify-center gap-1 py-space-xs text-outline hover:text-primary transition-colors font-label-mono-sm text-label-mono-sm"
-                  onClick={copyGeneratedPin}
-                >
-                  <span className="material-symbols-outlined text-[14px]">content_copy</span>
-                  <span>{copyBtnText}</span>
-                </button>
               </div>
+
+              {/* Multiple Session Tabs */}
+              {activeItems.length > 1 && (
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {activeItems.map((item) => {
+                    const isActive = selectedId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => setSelectedId(item.id)}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                          isActive
+                            ? "bg-blue-600 text-white shadow-xs"
+                            : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        }`}
+                      >
+                        <span className="material-symbols-outlined text-[16px]">desktop_windows</span>
+                        <span>{item.deviceHostname || `Kod: ${item.supportCode}`}</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            terminateActiveSession(item.id, item.supportCode);
+                          }}
+                          className="hover:opacity-70 ml-1"
+                          title="Kapat"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">close</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Viewers */}
+              {activeItems.map((item) => (
+                <div key={item.id} className={selectedId === item.id ? "block" : "hidden"}>
+                  <RemoteDesktopViewer
+                    sessionId={item.id}
+                    supportCode={item.supportCode}
+                    deviceHostname={item.deviceHostname}
+                  />
+                </div>
+              ))}
             </div>
           )}
-          {/* Notification Toast Container */}
-          <div
-            className={`fixed bottom-6 right-6 z-50 flex items-center gap-space-sm px-space-md py-space-sm rounded-xl bg-inverse-surface text-inverse-on-surface shadow-xl transform transition-all duration-300 ${
-              toast.visible ? "translate-y-0 opacity-100" : "translate-y-24 opacity-0"
-            }`}
-          >
-            <span className={`material-symbols-outlined text-[20px] ${toast.isError ? "text-error-container" : "text-tertiary-fixed"}`}>
-              {toast.icon}
-            </span>
-            <span className="font-body-sm text-body-sm font-semibold">{toast.message || "İşlem başarıyla kaydedildi."}</span>
+
+          {/* WAITING QUEUE SECTION */}
+          <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-xs flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined text-blue-600 text-[22px]">inbox</span>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-lg font-bold text-slate-900">Bekleyen Destek İstekleri</h2>
+                  <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs font-extrabold">
+                    {queueItems.length} Talep
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {queueItems.length === 0 ? (
+              <div className="py-12 flex flex-col items-center justify-center text-center">
+                <div className="w-14 h-14 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400 mb-3">
+                  <span className="material-symbols-outlined text-[28px]">check_circle</span>
+                </div>
+                <h3 className="text-base font-bold text-slate-800">Şu Anda Bekleyen Destek Talebi Yok</h3>
+                <p className="text-sm text-slate-500 max-w-md mt-1 mb-4">
+                  Müşteri bilgisayarına bağlanmak için yukarıdaki &quot;Yeni Destek Kodu Üret&quot; butonuna basıp 6 haneli kodu müşteriye iletebilirsiniz.
+                </p>
+                <button
+                  onClick={handleGenerateCode}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl text-xs font-bold transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">add</span>
+                  <span>Yeni Destek Kodu Oluştur</span>
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      <th className="py-3 px-4">Destek Kodu</th>
+                      <th className="py-3 px-4">Cihaz / Bilgisayar</th>
+                      <th className="py-3 px-4">IP Adresi</th>
+                      <th className="py-3 px-4">Bekleme Süresi</th>
+                      <th className="py-3 px-4 text-right">İşlem</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-sm">
+                    {queueItems.map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-4 px-4 font-mono font-bold text-blue-600 text-base">
+                          {item.supportCode}
+                        </td>
+                        <td className="py-4 px-4">
+                          <div className="flex items-center gap-2 font-medium text-slate-800">
+                            <span className="material-symbols-outlined text-slate-400 text-[18px]">laptop</span>
+                            <span>{item.deviceHostname || "Bilinmeyen Cihaz"}</span>
+                          </div>
+                        </td>
+                        <td className="py-4 px-4 font-mono text-xs text-slate-500">
+                          {item.deviceIp || "—"}
+                        </td>
+                        <td className="py-4 px-4 text-xs font-semibold text-amber-600">
+                          {formatWait(item.waitSeconds)}
+                        </td>
+                        <td className="py-4 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => rejectSession(item.id, item.supportCode)}
+                              className="px-3 py-1.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs font-semibold transition-colors"
+                            >
+                              Reddet
+                            </button>
+                            <button
+                              onClick={() => acceptSession(item.id, item.deviceHostname)}
+                              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition-colors"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">screen_share</span>
+                              <span>Bağlan (Kabul Et)</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </main>
       </div>
-    </>
+
+      {/* NEW CODE GENERATION MODAL */}
+      {modalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col items-center text-center animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4">
+              <span className="material-symbols-outlined text-[32px]">dialpad</span>
+            </div>
+
+            <h3 className="text-xl font-extrabold text-slate-900 tracking-tight">Yeni Destek Kodu Hazır</h3>
+            <p className="text-xs text-slate-500 mt-1 mb-5 max-w-xs">
+              Bu 6 haneli kodu müşterinize bildirin. Müşteri kodu girdiğinde destek oturumu başlayacaktır.
+            </p>
+
+            {/* Big Monospace Code Display */}
+            <div
+              onClick={copyModalPin}
+              className="w-full py-4 px-6 rounded-2xl bg-slate-50 border-2 border-dashed border-blue-200 hover:border-blue-400 cursor-pointer flex items-center justify-center gap-3 transition-colors mb-5 group"
+              title="Kopyalamak için tıklayın"
+            >
+              <span className="font-mono text-3xl font-extrabold tracking-widest text-slate-900 group-hover:text-blue-600 transition-colors">
+                {modalPin}
+              </span>
+              <span className="material-symbols-outlined text-slate-400 group-hover:text-blue-600 text-[20px] transition-colors">
+                content_copy
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3 w-full">
+              <button
+                onClick={() => setModalOpen(false)}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-semibold transition-colors"
+              >
+                Kapat
+              </button>
+              <button
+                onClick={copyModalPin}
+                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold shadow-xs transition-colors"
+              >
+                {modalCopyText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast.visible && (
+        <div
+          className={`fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg border text-sm font-semibold animate-in slide-in-from-bottom-2 ${
+            toast.isError
+              ? "bg-rose-50 border-rose-200 text-rose-800"
+              : "bg-slate-900 border-slate-800 text-white"
+          }`}
+        >
+          <span className="material-symbols-outlined text-[18px]">{toast.icon}</span>
+          <span>{toast.message}</span>
+        </div>
+      )}
+    </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
-import { WS_URL, getStoredToken } from "@/lib/api";
+import { WS_URL, getStoredToken, getStoredTechnician } from "@/lib/api";
 import { AudioDeviceModal } from "./AudioDeviceModal";
 
 interface RemoteDesktopViewerProps {
@@ -34,14 +34,12 @@ export default function RemoteDesktopViewer({
   const [chatInput, setChatInput] = useState<string>("");
   const [techCount, setTechCount] = useState<number>(1);
   const [inviteCopied, setInviteCopied] = useState<boolean>(false);
-  const [isChatOpen, setIsChatOpen] = useState<boolean>(true);
+  const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
   const [isInputBlocked, setIsInputBlocked] = useState<boolean>(false);
   const [isPrivacyScreen, setIsPrivacyScreen] = useState<boolean>(false);
   const [sysInfo, setSysInfo] = useState<any>(null);
   const [showSysInfoModal, setShowSysInfoModal] = useState<boolean>(false);
-  const [isWhiteboardMode, setIsWhiteboardMode] = useState<boolean>(false);
-  const [isDrawing, setIsDrawing] = useState<boolean>(false);
-  const [drawColor, setDrawColor] = useState<string>("#ef4444");
   const [voiceActive, setVoiceActive] = useState<boolean>(false);
   const [showAudioModal, setShowAudioModal] = useState<boolean>(false);
   const [isRecordingAudio, setIsRecordingAudio] = useState<boolean>(true);
@@ -50,9 +48,6 @@ export default function RemoteDesktopViewer({
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localAudioStreamRef = useRef<MediaStream | null>(null);
-  const audioRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-
   const socketRef = useRef<Socket | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -70,10 +65,6 @@ export default function RemoteDesktopViewer({
 
     socketRef.current = socket;
 
-    socket.on("connect", () => {
-      // Socket connected
-    });
-
     socket.on("agent:status", (data: { sessionId: string; online: boolean }) => {
       if (data.sessionId !== sessionId) return;
       if (data.online) {
@@ -86,37 +77,54 @@ export default function RemoteDesktopViewer({
       if (data.result === "accepted") {
         setConnectionState("connected");
         setErrorMessage("");
-        // Auto fullscreen when session connects
-        if (containerRef.current && !document.fullscreenElement) {
-          containerRef.current.requestFullscreen().catch(() => {});
-        }
       } else if (data.result === "declined") {
         setConnectionState("error");
         setErrorMessage("Kullanıcı uzaktan bağlantı talebini reddetti.");
       } else if (data.result === "timeout") {
         setConnectionState("error");
-        setErrorMessage("Kullanıcı onay penceresi yanıt vermedi (zaman aşımı).");
+        setErrorMessage("Kullanıcı onay penceresi zaman aşımına uğradı.");
       } else if (data.result === "offline") {
         setConnectionState("error");
-        setErrorMessage(data.error || "Müşteri agentı çevrimdışı.");
+        setErrorMessage(data.error || "İstemci agentı çevrimdışı.");
       }
     });
 
     socket.on("webrtc:signal", async (data: { sessionId: string; signal: any }) => {
       if (data.sessionId !== sessionId || !data.signal) return;
-      const pc = peerConnectionRef.current;
-      if (!pc) return;
-
+      let pc = peerConnectionRef.current;
       try {
         if (data.signal.type === "offer") {
+          if (!pc) {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
+            if (!stream) return;
+            localAudioStreamRef.current = stream;
+            pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+            peerConnectionRef.current = pc;
+            stream.getTracks().forEach((track) => pc!.addTrack(track, stream));
+            pc.onicecandidate = (event) => {
+              if (event.candidate && socketRef.current) {
+                socketRef.current.emit("webrtc:signal", { sessionId, signal: event.candidate });
+              }
+            };
+            pc.ontrack = (event) => {
+              const remoteAudio = new Audio();
+              remoteAudio.srcObject = event.streams[0];
+              remoteAudio.play().catch(() => {});
+            };
+            setVoiceActive(true);
+          }
           await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          socket.emit("webrtc:signal", { sessionId, signal: answer });
+          socketRef.current?.emit("webrtc:signal", { sessionId, signal: answer });
         } else if (data.signal.type === "answer") {
-          await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+          }
         } else if (data.signal.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(data.signal));
+          if (pc) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.signal));
+          }
         }
       } catch (err) {
         console.error("WebRTC signal error:", err);
@@ -126,9 +134,12 @@ export default function RemoteDesktopViewer({
     socket.on("remote:frame", (data: { sessionId: string; frame: string; width: number; height: number }) => {
       if (data.sessionId !== sessionId) return;
 
-      setConnectionState("connected");
+      setConnectionState((prev) => (prev !== "connected" ? "connected" : prev));
 
-      setResolution({ width: data.width, height: data.height });
+      setResolution((prev) => {
+        if (prev.width === data.width && prev.height === data.height) return prev;
+        return { width: data.width, height: data.height };
+      });
       frameCountRef.current += 1;
 
       const canvas = canvasRef.current;
@@ -191,6 +202,9 @@ export default function RemoteDesktopViewer({
           ...prev,
           { text: data.text, sender: data.sender, senderName: data.senderName, timestamp: data.timestamp },
         ]);
+        if (data.sender !== "tech") {
+          setUnreadChatCount((v) => v + 1);
+        }
       },
     );
 
@@ -207,7 +221,6 @@ export default function RemoteDesktopViewer({
         socketRef.current.disconnect();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   const startRemoteSession = useCallback(() => {
@@ -215,7 +228,9 @@ export default function RemoteDesktopViewer({
     setConnectionState("waiting_consent");
     setErrorMessage("");
 
-    socketRef.current.emit("remote:start", { sessionId }, (response: { ok?: boolean; error?: string }) => {
+    const tech = getStoredTechnician();
+    const techName = tech?.displayName || tech?.username || "Teknisyen";
+    socketRef.current.emit("remote:start", { sessionId, technicianName: techName }, (response: { ok?: boolean; error?: string }) => {
       if (response && !response.ok) {
         setConnectionState("error");
         setErrorMessage(response.error || "Bağlantı başlatılamadı.");
@@ -231,7 +246,7 @@ export default function RemoteDesktopViewer({
       sessionId,
       text,
       sender: "tech",
-      senderName: "Teknisyen",
+      senderName: getStoredTechnician()?.displayName || getStoredTechnician()?.username || "Teknisyen",
     });
 
     setChatMessages((prev) => [
@@ -246,10 +261,12 @@ export default function RemoteDesktopViewer({
   }, [chatMessages]);
 
   const stopRemoteSession = useCallback(() => {
-    if (socketRef.current) {
-      socketRef.current.emit("remote:stop", { sessionId });
+    if (confirm("Bu uzaktan masaüstü oturumunu sonlandırmak istediğinize emin misiniz?")) {
+      if (socketRef.current) {
+        socketRef.current.emit("remote:stop", { sessionId });
+      }
+      setConnectionState("ended");
     }
-    setConnectionState("ended");
   }, [sessionId]);
 
   const sendCtrlAltDel = useCallback(() => {
@@ -305,40 +322,16 @@ export default function RemoteDesktopViewer({
       pc.ontrack = (event) => {
         const remoteAudio = new Audio();
         remoteAudio.srcObject = event.streams[0];
-        if (speakerId && (remoteAudio as any).setSinkId) {
-          (remoteAudio as any).setSinkId(speakerId).catch(() => {});
-        }
         remoteAudio.play().catch(() => {});
       };
 
-      // Always auto-record audio stream
-      audioChunksRef.current = [];
-      try {
-        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/webm";
-        const recorder = new MediaRecorder(stream, { mimeType });
-        recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-        recorder.start(1000);
-        audioRecorderRef.current = recorder;
-      } catch (e) {
-        console.error("Audio recorder init error:", e);
-      }
-
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-
-      if (socketRef.current) {
-        socketRef.current.emit("webrtc:signal", { sessionId, signal: offer });
-      }
-
+      socketRef.current?.emit("webrtc:signal", { sessionId, signal: offer });
       setVoiceActive(true);
-      setShowAudioModal(false);
     } catch (err) {
-      console.error("Start voice call error:", err);
-      alert("Mikrofon erişimi sağlanamadı veya görüşme başlatılamadı.");
+      console.error("Voice call start error:", err);
+      alert("Mikrofon başlatılamadı.");
     }
   };
 
@@ -351,47 +344,90 @@ export default function RemoteDesktopViewer({
       localAudioStreamRef.current.getTracks().forEach((t) => t.stop());
       localAudioStreamRef.current = null;
     }
-    if (audioRecorderRef.current && audioRecorderRef.current.state !== "inactive") {
-      audioRecorderRef.current.stop();
-      audioRecorderRef.current = null;
-    }
     setVoiceActive(false);
-    setShowAudioModal(false);
   };
 
-  const copyInviteLink = useCallback(() => {
+  const copyInviteLink = () => {
     const origin = typeof window !== "undefined" ? window.location.origin : "https://remote.homaklab.com";
     const inviteUrl = `${origin}/support-queue?session=${sessionId}`;
     navigator.clipboard?.writeText(inviteUrl).catch(() => {});
     setInviteCopied(true);
-    setTimeout(() => setInviteCopied(false), 2500);
-  }, [sessionId]);
+    setTimeout(() => setInviteCopied(null as any), 2500);
+  };
 
-  // Mouse & Keyboard Handlers for Canvas
+  // Precise Canvas Coordinate Calculation
+  const getCanvasCoordinates = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    const nativeWidth = canvas.width || 1920;
+    const nativeHeight = canvas.height || 1080;
+    const nativeAspect = nativeWidth / nativeHeight;
+    const containerAspect = rect.width / rect.height;
+
+    let displayedWidth = rect.width;
+    let displayedHeight = rect.height;
+
+    if (containerAspect > nativeAspect) {
+      displayedWidth = rect.height * nativeAspect;
+    } else {
+      displayedHeight = rect.width / nativeAspect;
+    }
+
+    const offsetX = (rect.width - displayedWidth) / 2;
+    const offsetY = (rect.height - displayedHeight) / 2;
+
+    const mouseX = e.clientX - rect.left - offsetX;
+    const mouseY = e.clientY - rect.top - offsetY;
+
+    const x = Math.max(0, Math.min(1, mouseX / displayedWidth));
+    const y = Math.max(0, Math.min(1, mouseY / displayedHeight));
+    return { x, y };
+  };
+
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (connectionState !== "connected" || !canvasRef.current || !socketRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
-
-    socketRef.current.emit("remote:control", { sessionId, action: "mousemove", x, y });
+    if (connectionState !== "connected" || !socketRef.current) return;
+    const coords = getCanvasCoordinates(e);
+    if (!coords) return;
+    socketRef.current.emit("remote:control", { sessionId, action: "mousemove", x: coords.x, y: coords.y });
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (connectionState !== "connected" || !socketRef.current) return;
+    const coords = getCanvasCoordinates(e);
     const btn = e.button === 2 ? "right" : "left";
-    socketRef.current.emit("remote:control", { sessionId, action: "mousedown", button: btn });
+    socketRef.current.emit("remote:control", {
+      sessionId,
+      action: "mousedown",
+      button: btn,
+      x: coords?.x,
+      y: coords?.y,
+    });
   };
 
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (connectionState !== "connected" || !socketRef.current) return;
+    const coords = getCanvasCoordinates(e);
     const btn = e.button === 2 ? "right" : "left";
-    socketRef.current.emit("remote:control", { sessionId, action: "mouseup", button: btn });
+    socketRef.current.emit("remote:control", {
+      sessionId,
+      action: "mouseup",
+      button: btn,
+      x: coords?.x,
+      y: coords?.y,
+    });
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    if (connectionState !== "connected" || !socketRef.current) return;
+    const wheelAmount = e.deltaY < 0 ? 120 : -120;
+    socketRef.current.emit("remote:control", { sessionId, action: "wheel", delta: wheelAmount });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (connectionState !== "connected" || !socketRef.current) return;
-    // Don't intercept keyboard shortcuts if user is typing in chat input
     if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
       return;
     }
@@ -405,11 +441,17 @@ export default function RemoteDesktopViewer({
       ArrowDown: "{DOWN}",
       ArrowLeft: "{LEFT}",
       ArrowRight: "{RIGHT}",
-      F1: "{F1}", F2: "{F2}", F3: "{F3}", F4: "{F4}", F5: "{F5}",
-      F6: "{F6}", F7: "{F7}", F8: "{F8}", F9: "{F9}", F10: "{F10}",
-      F11: "{F11}", F12: "{F12}",
+      Home: "{HOME}",
+      End: "{END}",
+      PageUp: "{PGUP}",
+      PageDown: "{PGDN}",
+      " ": " ",
     };
-    const key = e.key.length === 1 ? e.key : mapping[e.key] || "";
+
+    let key = mapping[e.key];
+    if (!key) {
+      if (e.key.length === 1) key = e.key;
+    }
     if (!key) return;
     e.preventDefault();
     socketRef.current.emit("remote:control", { sessionId, action: "keypress", key });
@@ -437,231 +479,277 @@ export default function RemoteDesktopViewer({
       ref={containerRef}
       tabIndex={0}
       onKeyDown={handleKeyDown}
-      className={`flex flex-col w-full bg-slate-950 border border-slate-800 text-slate-100 overflow-hidden outline-none select-none shadow-xl ${
-        isFullscreen ? "h-screen rounded-none" : "rounded-xl"
+      className={`flex flex-col w-full bg-slate-950 border border-slate-800 text-slate-100 overflow-hidden outline-none select-none shadow-2xl transition-all ${
+        isFullscreen ? "h-screen rounded-none" : "rounded-2xl"
       }`}
     >
-      {/* Control Header Bar */}
+      {/* Top Floating Control Toolbar (Studio Bar) */}
       <div
-        className={`flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 text-xs flex-wrap gap-2 transition-all ${
-          isFullscreen ? "opacity-0 hover:opacity-100 absolute top-0 left-0 right-0 z-20" : ""
+        className={`flex items-center justify-between px-4 py-2.5 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-xs flex-wrap gap-2 transition-all z-20 ${
+          isFullscreen ? "absolute top-0 left-0 right-0 opacity-0 hover:opacity-100 shadow-2xl" : ""
         }`}
       >
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-white flex items-center gap-1.5">
-            <span className="material-symbols-outlined text-[18px] text-indigo-400">desktop_windows</span>
-            {deviceHostname || "Uzak Masaüstü"}
-          </span>
-          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800/50">
+        {/* Left: Device & Stream Info */}
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 font-bold text-white">
+            <span className="material-symbols-outlined text-[18px] text-blue-400">desktop_windows</span>
+            <span>{deviceHostname || "Uzak Masaüstü"}</span>
+          </div>
+          <span className="px-2.5 py-0.5 rounded-md text-[11px] font-mono font-bold bg-blue-950/80 text-blue-300 border border-blue-800/60">
             PIN: {supportCode}
           </span>
-        </div>
-
-        {/* Status indicator */}
-        <div className="flex items-center gap-2">
           {connectionState === "connected" && (
             <>
-              <span className="flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
+              <div className="hidden sm:flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                CANLI ({fps} FPS {resolution.width > 0 ? `${resolution.width}x${resolution.height}` : ""})
-              </span>
-              <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800/60 animate-pulse">
+                <span>{fps} FPS</span>
+                {resolution.width > 0 && <span className="text-slate-500">• {resolution.width}x{resolution.height}</span>}
+              </div>
+              <span className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono bg-rose-950/80 text-rose-300 border border-rose-800/60 animate-pulse">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-                KAYIT ALINIYOR (MP4)
+                CANLI KAYIT
               </span>
             </>
           )}
-
           {connectionState === "waiting_consent" && (
-            <span className="flex items-center gap-1 text-[11px] text-amber-400 font-mono">
+            <span className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-              Onay İsteği Gönderildi (Yanıt Bekleniyor)
+              Onay Bekleniyor
             </span>
           )}
+        </div>
 
-          {/* Action Buttons */}
+        {/* Center & Right: Action Controls */}
+        <div className="flex items-center gap-1.5 flex-wrap">
           {connectionState === "idle" && (
             <button
               onClick={startRemoteSession}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-all shadow"
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
             >
-              <span className="material-symbols-outlined text-[16px]">play_arrow</span>
-              <span>Canlı Ekran Bağlantısı Başlat</span>
+              <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+              <span>Canlı Ekranı Başlat</span>
             </button>
           )}
 
           {connectionState === "connected" && (
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={copyInviteLink}
-                title="Başka bir teknisyeni bu canlı oturuma katılmaya davet et"
-                className="flex items-center gap-1 px-2.5 py-1 rounded bg-indigo-900/80 hover:bg-indigo-800 text-indigo-200 font-semibold text-[11px] border border-indigo-700/60 transition-colors"
-              >
-                <span className="material-symbols-outlined text-[14px]">person_add</span>
-                <span>{inviteCopied ? "Davet Linki Kopyalandı!" : "Davet Et"}</span>
-              </button>
-              {techCount > 1 && (
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800/50 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[12px]">group</span>
-                  {techCount} Teknisyen Bağlı
-                </span>
-              )}
+            <>
+              {/* Voice Call VoIP Button */}
               <button
                 onClick={() => setShowAudioModal(true)}
-                title="Sesli Görüşme & Mikrofon / Hoparlör Ayarları"
-                className={`flex items-center gap-1 px-2.5 py-1 rounded font-semibold text-[11px] border transition-all ${
+                title="Sesli İletişim & Aygıt Ayarları"
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
                   voiceActive
-                    ? "bg-emerald-900/80 border-emerald-600 text-emerald-200 animate-pulse"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    ? "bg-emerald-900/80 border-emerald-500 text-emerald-200 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
                 }`}
               >
-                <span className="material-symbols-outlined text-[14px]">
+                <span className="material-symbols-outlined text-[16px]">
                   {voiceActive ? "mic" : "mic_none"}
                 </span>
                 <span>{voiceActive ? "Sesli Görüşme Aktif" : "Sesli Görüşme"}</span>
               </button>
+
+              {/* Chat Toggle Button */}
               <button
-                onClick={() => setIsChatOpen((v) => !v)}
-                title="Canlı Sohbet"
-                className={`relative p-1 rounded text-[11px] border ${
+                onClick={() => {
+                  setIsChatOpen((v) => !v);
+                  if (!isChatOpen) setUnreadChatCount(0);
+                }}
+                title="Canlı Sohbet Paneli"
+                className={`relative flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
                   isChatOpen
-                    ? "bg-indigo-900/60 border-indigo-700 text-indigo-300"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                    ? "bg-blue-900/80 border-blue-600 text-blue-200"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
                 }`}
               >
                 <span className="material-symbols-outlined text-[16px]">chat</span>
+                <span>Sohbet</span>
+                {unreadChatCount > 0 && !isChatOpen && (
+                  <span className="ml-1 px-1.5 py-0.2 bg-rose-500 text-white text-[10px] font-black rounded-full">
+                    {unreadChatCount}
+                  </span>
+                )}
               </button>
+
+              {/* Security Tools (Privacy Screen & Input Block) */}
               <button
                 onClick={togglePrivacyScreen}
-                title="Müşteri Ekranını Karart (Privacy Mode)"
-                className={`p-1 rounded text-[11px] border ${
+                title={isPrivacyScreen ? "Gizlilik Ekranını Kapat" : "İstemci Ekranını Karart (Privacy Mode)"}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
                   isPrivacyScreen
-                    ? "bg-amber-900/80 border-amber-600 text-amber-200"
+                    ? "bg-amber-900/80 border-amber-500 text-amber-200"
                     : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
                 }`}
               >
-                <span className="material-symbols-outlined text-[16px]">visibility_off</span>
+                <span className="material-symbols-outlined text-[15px]">visibility_off</span>
+                <span className="hidden lg:inline">{isPrivacyScreen ? "Karartma Aktif" : "Karart"}</span>
               </button>
+
               <button
                 onClick={toggleInputBlock}
-                title="Müşteri Fare/Klavye Girdisini Engelle"
-                className={`p-1 rounded text-[11px] border ${
+                title={isInputBlocked ? "Kullanıcı Girdisini Aç" : "Müşteri Klavye/Faresini Engelle"}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
                   isInputBlocked
-                    ? "bg-rose-900/80 border-rose-600 text-rose-200"
+                    ? "bg-rose-900/80 border-rose-500 text-rose-200"
                     : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
                 }`}
               >
-                <span className="material-symbols-outlined text-[16px]">block</span>
+                <span className="material-symbols-outlined text-[15px]">block</span>
+                <span className="hidden lg:inline">{isInputBlocked ? "Girdi Kilitli" : "Girdi Kilidi"}</span>
               </button>
-              <button
-                onClick={requestSysInfo}
-                title="Sistem ve Donanım Bilgilerini Gör"
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] border border-slate-700"
-              >
-                <span className="material-symbols-outlined text-[16px]">info</span>
-              </button>
-              <div className="h-4 w-px bg-slate-700 mx-0.5"></div>
-              <button
-                onClick={() => runAdminCmd("devmgmt")}
-                title="Aygıt Yöneticisi Aç"
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono border border-slate-700"
-              >
-                DevMgmt
-              </button>
-              <button
-                onClick={() => runAdminCmd("services")}
-                title="Hizmetler (Services) Aç"
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono border border-slate-700"
-              >
-                Services
-              </button>
-              <button
-                onClick={() => runAdminCmd("cmd")}
-                title="CMD / Komut İstemcisi Aç"
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono border border-slate-700"
-              >
-                CMD
-              </button>
+
+              {/* Admin Tools Dropdown / Quick Buttons */}
               <button
                 onClick={sendCtrlAltDel}
                 title="Ctrl+Alt+Del Gönder"
-                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-[11px] border border-slate-700"
+                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-medium border border-slate-700 transition-colors cursor-pointer"
               >
                 Ctrl+Alt+Del
               </button>
+
+              <button
+                onClick={requestSysInfo}
+                title="Sistem & Donanım Özeti"
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[17px]">info</span>
+              </button>
+
+              {/* Multi-Tech Invite Button */}
+              <button
+                onClick={copyInviteLink}
+                title="Başka bir teknisyeni davet et"
+                className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 text-xs font-semibold border border-indigo-800/60 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[14px]">person_add</span>
+                <span>{inviteCopied ? "Kopyalandı!" : "Davet"}</span>
+              </button>
+
+              {/* Quick Admin Actions (CMD, Devmgmt) */}
+              <div className="hidden xl:flex items-center gap-1">
+                <button
+                  onClick={() => runAdminCmd("cmd")}
+                  title="Komut İstemcisi Aç"
+                  className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono border border-slate-700"
+                >
+                  CMD
+                </button>
+                <button
+                  onClick={() => runAdminCmd("devmgmt")}
+                  title="Aygıt Yöneticisi Aç"
+                  className="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono border border-slate-700"
+                >
+                  DevMgmt
+                </button>
+              </div>
+
+              {/* Fullscreen Button */}
               <button
                 onClick={toggleFullscreen}
-                title="Tam Ekran"
-                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] border border-slate-700"
+                title={isFullscreen ? "Tam Ekrandan Çık (ESC)" : "Tam Ekran Yap (F11)"}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow transition-all cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">
                   {isFullscreen ? "fullscreen_exit" : "fullscreen"}
                 </span>
+                <span>{isFullscreen ? "Küçült" : "Tam Ekran"}</span>
               </button>
+
+              {/* Disconnect Button */}
               <button
                 onClick={stopRemoteSession}
-                className="flex items-center gap-1 px-2.5 py-1 rounded bg-rose-900/80 hover:bg-rose-800 text-rose-200 font-semibold text-[11px] border border-rose-700/60"
+                title="Oturumu Sonlandır"
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-800/60 font-bold text-xs transition-colors cursor-pointer"
               >
-                <span className="material-symbols-outlined text-[14px]">power_settings_new</span>
+                <span className="material-symbols-outlined text-[15px]">power_settings_new</span>
                 <span>Sonlandır</span>
               </button>
-            </div>
+            </>
           )}
         </div>
       </div>
 
-      {/* Main Screen Canvas Display */}
+      {/* Main Screen Canvas Viewport */}
       <div
         className={`relative w-full bg-slate-950 flex items-center justify-center overflow-hidden ${
           isFullscreen ? "flex-1" : "aspect-video"
         }`}
       >
+        {/* State: Idle */}
         {connectionState === "idle" && (
-          <div className="flex flex-col items-center gap-3 p-6 text-center text-slate-400">
-            <span className="material-symbols-outlined text-4xl text-slate-600">monitor</span>
-            <p className="text-sm max-w-sm">
-              Homak Native uzaktan masaüstü çözümü ile istemci ekranını canlı izlemek ve kontrol etmek için yukarıdaki butona tıklayın.
-            </p>
+          <div className="flex flex-col items-center gap-4 p-8 text-center max-w-md animate-fadeIn">
+            <div className="w-16 h-16 rounded-3xl bg-blue-950/60 border border-blue-800/60 flex items-center justify-center text-blue-400 shadow-xl shadow-blue-950/50">
+              <span className="material-symbols-outlined text-3xl">desktop_windows</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <h3 className="text-base font-bold text-white">Uzak Masaüstü Bağlantısına Hazır</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                İstemci bilgisayarına <b>({deviceHostname || supportCode})</b> doğrudan bağlanmak ve ekran kontrolünü başlatmak için aşağıdaki butona tıklayın.
+              </p>
+            </div>
             <button
               onClick={startRemoteSession}
-              className="mt-1 flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shadow-md transition-all text-sm"
+              className="mt-2 flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold text-sm shadow-xl shadow-blue-600/30 transition-all cursor-pointer transform hover:-translate-y-0.5"
             >
-              <span className="material-symbols-outlined text-[18px]">play_arrow</span>
-              <span>Uzak Masaüstü Bağlantısı Başlat</span>
+              <span className="material-symbols-outlined text-[20px]">play_arrow</span>
+              <span>Canlı Ekran Bağlantısını Başlat</span>
             </button>
+            <div className="flex items-center gap-4 text-[11px] text-slate-500 font-medium mt-2">
+              <span>⚡ 60 FPS Canlı Yayın</span>
+              <span>•</span>
+              <span>🔒 AES-256 Şifreli</span>
+              <span>•</span>
+              <span>🎙️ Entegre Sesli Arama</span>
+            </div>
           </div>
         )}
 
+        {/* State: Waiting Consent */}
         {connectionState === "waiting_consent" && (
-          <div className="flex flex-col items-center gap-3 p-6 text-center text-amber-300">
-            <span className="material-symbols-outlined text-4xl animate-bounce">pending</span>
-            <p className="text-sm font-semibold">Müşteri bilgisayarında onay penceresi açıldı.</p>
-            <p className="text-xs text-slate-400 max-w-xs">
-              Kullanıcının 30 saniye içinde onay vermesi bekleniyor...
-            </p>
+          <div className="flex flex-col items-center gap-4 p-8 text-center max-w-sm animate-fadeIn">
+            <div className="relative w-20 h-20 flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-amber-500/20 animate-ping"></div>
+              <div className="w-16 h-16 rounded-full bg-amber-950/80 border-2 border-amber-500/80 flex items-center justify-center text-amber-400 shadow-lg">
+                <span className="material-symbols-outlined text-3xl">pending</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <h3 className="text-base font-bold text-amber-300">Müşteri Onayı Bekleniyor...</h3>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                İstemci ekranında onay penceresi açıldı. Kullanıcının &quot;İzin Ver&quot; demesi bekleniyor (30 saniye).
+              </p>
+            </div>
           </div>
         )}
 
+        {/* State: Error */}
         {connectionState === "error" && (
-          <div className="flex flex-col items-center gap-3 p-6 text-center text-rose-400">
-            <span className="material-symbols-outlined text-4xl text-rose-500">error</span>
-            <p className="text-sm font-bold">{errorMessage}</p>
+          <div className="flex flex-col items-center gap-3 p-8 text-center max-w-sm animate-fadeIn">
+            <div className="w-14 h-14 rounded-2xl bg-rose-950/80 border border-rose-800/80 flex items-center justify-center text-rose-400">
+              <span className="material-symbols-outlined text-3xl">error</span>
+            </div>
+            <h3 className="text-sm font-bold text-rose-300">Bağlantı Kurulamadı</h3>
+            <p className="text-xs text-slate-400">{errorMessage}</p>
             <button
               onClick={startRemoteSession}
-              className="mt-2 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold"
+              className="mt-2 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-slate-700 transition-colors"
             >
               Tekrar Deneyin
             </button>
           </div>
         )}
 
+        {/* State: Ended */}
         {connectionState === "ended" && (
-          <div className="flex flex-col items-center gap-2 p-6 text-center text-slate-400">
-            <span className="material-symbols-outlined text-4xl text-slate-500">do_not_disturb</span>
-            <p className="text-sm">Uzak masaüstü oturumu sonlandırıldı.</p>
+          <div className="flex flex-col items-center gap-3 p-8 text-center max-w-sm animate-fadeIn">
+            <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500">
+              <span className="material-symbols-outlined text-3xl">do_not_disturb</span>
+            </div>
+            <h3 className="text-sm font-bold text-slate-300">Oturum Sonlandırıldı</h3>
+            <p className="text-xs text-slate-500">Uzak masaüstü ekran paylaşımı tamamlandı.</p>
             <button
               onClick={startRemoteSession}
-              className="mt-2 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold"
+              className="mt-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow transition-colors"
             >
               Yeniden Bağlan
             </button>
@@ -674,63 +762,64 @@ export default function RemoteDesktopViewer({
           onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
+          onWheel={handleWheel}
           onContextMenu={(e) => e.preventDefault()}
-          className={`w-full h-full object-contain cursor-crosshair ${
-            connectionState === "connected" ? "block" : "hidden"
+          className={`w-full h-full object-contain cursor-crosshair transition-opacity duration-200 ${
+            connectionState === "connected" ? "block opacity-100" : "hidden opacity-0"
           }`}
         />
 
-        {/* Always-visible Exit Fullscreen Button */}
+        {/* Fullscreen Floating Exit Button (Always accessible) */}
         {isFullscreen && connectionState === "connected" && (
           <button
             onClick={toggleFullscreen}
             title="Tam Ekrandan Çık (ESC)"
-            className="absolute top-3 right-3 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-slate-200 text-xs font-semibold border border-slate-700 backdrop-blur"
+            className="absolute top-4 right-4 z-40 flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 text-white text-xs font-bold border border-slate-700 shadow-2xl backdrop-blur cursor-pointer"
           >
             <span className="material-symbols-outlined text-[16px]">fullscreen_exit</span>
             <span>Tam Ekrandan Çık</span>
           </button>
         )}
 
-        {/* Floating Chat Panel */}
+        {/* Floating Live Chat Widget */}
         {connectionState === "connected" && isChatOpen && (
-          <div className="absolute bottom-3 right-3 w-72 h-80 bg-slate-900/95 backdrop-blur border border-slate-700 rounded-xl shadow-2xl flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-slate-800 border-b border-slate-700">
-              <span className="text-[11px] font-bold text-indigo-300 flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-[14px]">chat</span>
-                Canlı Sohbet
-              </span>
+          <div className="absolute bottom-4 right-4 w-80 h-96 bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col overflow-hidden z-30 animate-fadeIn">
+            <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-800/80 border-b border-slate-700">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px] text-blue-400">chat</span>
+                <span className="text-xs font-bold text-white">İstemci ile Canlı Sohbet</span>
+              </div>
               <button
                 onClick={() => setIsChatOpen(false)}
-                className="text-slate-400 hover:text-slate-200"
+                className="text-slate-400 hover:text-white p-1 rounded-md transition-colors"
               >
                 <span className="material-symbols-outlined text-[16px]">close</span>
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-2.5 flex flex-col gap-2 text-[11px]">
+            <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2 text-xs">
               {chatMessages.length === 0 && (
-                <div className="text-center text-slate-500 text-[10px] mt-6">
-                  Müşteri ile buradan anlık mesajlaşabilirsiniz.
+                <div className="text-center text-slate-500 text-[11px] my-auto">
+                  💬 İstemciye buradan anlık mesaj gönderebilirsiniz.
                 </div>
               )}
               {chatMessages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`max-w-[85%] px-2.5 py-1.5 rounded-lg leading-snug break-words ${
+                  className={`max-w-[85%] px-3 py-2 rounded-xl leading-snug break-words ${
                     msg.sender === "tech"
-                      ? "self-end bg-indigo-600 text-white rounded-br-sm"
-                      : "self-start bg-slate-700 text-slate-100 rounded-bl-sm"
+                      ? "self-end bg-gradient-to-br from-blue-600 to-indigo-600 text-white rounded-br-xs shadow-xs"
+                      : "self-start bg-slate-800 text-slate-100 border border-slate-700 rounded-bl-xs shadow-xs"
                   }`}
                 >
-                  <div className="text-[9px] font-bold opacity-80 mb-0.5">{msg.senderName}</div>
+                  <div className="text-[10px] font-bold opacity-75 mb-0.5">{msg.senderName}</div>
                   <div>{msg.text}</div>
                 </div>
               ))}
               <div ref={chatEndRef} />
             </div>
 
-            <div className="flex items-center gap-1.5 p-2 border-t border-slate-700 bg-slate-800">
+            <div className="flex items-center gap-1.5 p-2.5 border-t border-slate-800 bg-slate-900">
               <input
                 type="text"
                 value={chatInput}
@@ -745,75 +834,79 @@ export default function RemoteDesktopViewer({
                 onKeyUp={(e) => e.stopPropagation()}
                 onKeyPress={(e) => e.stopPropagation()}
                 placeholder="Mesajınızı yazın..."
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-100 outline-none focus:border-indigo-500"
+                className="flex-1 bg-slate-800/90 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none focus:border-blue-500"
                 autoComplete="off"
               />
               <button
                 onClick={sendChatMessage}
-                className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold"
+                className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-colors cursor-pointer"
               >
-                <span className="material-symbols-outlined text-[14px]">send</span>
+                <span className="material-symbols-outlined text-[16px]">send</span>
               </button>
             </div>
           </div>
         )}
       </div>
+
       {/* System Information Modal */}
       {showSysInfoModal && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-5 shadow-2xl text-slate-100 flex flex-col gap-4">
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-slate-100 flex flex-col gap-4 animate-fadeIn">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2 text-indigo-400 font-bold">
-                <span className="material-symbols-outlined text-[20px]">info</span>
+              <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
+                <span className="material-symbols-outlined text-[22px]">devices</span>
                 <span>İstemci Sistem & Donanım Özeti</span>
               </div>
               <button onClick={() => setShowSysInfoModal(false)} className="text-slate-400 hover:text-white">
-                <span className="material-symbols-outlined text-[18px]">close</span>
+                <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
+
             {sysInfo ? (
               <div className="flex flex-col gap-2.5 text-xs font-mono">
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
-                  <span className="text-slate-400">Hostname:</span>
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                  <span className="text-slate-400">Cihaz Adı:</span>
                   <span className="font-bold text-white">{sysInfo.hostname}</span>
                 </div>
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
                   <span className="text-slate-400">İşletim Sistemi:</span>
                   <span className="text-emerald-400">{sysInfo.os}</span>
                 </div>
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
                   <span className="text-slate-400">İşlemci (CPU):</span>
-                  <span className="text-indigo-300">{sysInfo.cpu} ({sysInfo.cpuCores} Çekirdek)</span>
+                  <span className="text-blue-300">{sysInfo.cpu} ({sysInfo.cpuCores} Çekirdek)</span>
                 </div>
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
                   <span className="text-slate-400">Bellek (RAM):</span>
                   <span className="text-amber-300">{sysInfo.memory}</span>
                 </div>
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
-                  <span className="text-slate-400">Açık Kalma Süresi:</span>
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                  <span className="text-slate-400">Açık Kalma:</span>
                   <span className="text-slate-200">{sysInfo.uptime}</span>
                 </div>
-                <div className="flex justify-between p-2 rounded bg-slate-800/60">
+                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
                   <span className="text-slate-400">Kullanıcı:</span>
                   <span className="text-purple-300">{sysInfo.user}</span>
                 </div>
               </div>
             ) : (
-              <div className="py-8 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
-                <span className="material-symbols-outlined text-2xl animate-spin text-indigo-400">progress_activity</span>
-                <span>Agent tan sistem bilgileri alınıyor...</span>
+              <div className="py-10 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                <span className="material-symbols-outlined text-3xl animate-spin text-blue-500">progress_activity</span>
+                <span>İstemciden sistem bilgileri alınıyor...</span>
               </div>
             )}
+
             <button
               onClick={() => setShowSysInfoModal(false)}
-              className="mt-2 w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-xs transition-colors"
+              className="mt-2 w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer"
             >
               Kapat
             </button>
           </div>
         </div>
       )}
-      {/* Audio Device & Call Control Modal */}
+
+      {/* Audio Device & VoIP Call Modal */}
       <AudioDeviceModal
         isOpen={showAudioModal}
         onClose={() => setShowAudioModal(false)}

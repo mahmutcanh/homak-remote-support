@@ -6,20 +6,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { clearAuth, getStoredTechnician, getStoredToken, Technician } from "@/lib/api";
 
 const NAV_ITEMS = [
-  { href: "/dashboard", icon: "dashboard", label: "Dashboard" },
-  { href: "/support-queue", icon: "support_agent", label: "Support Queue" },
-  { href: "/admin/technicians", icon: "manage_accounts", label: "Teknisyen Yönetimi" },
-  { href: "/devices", icon: "devices", label: "Devices" },
-  { href: "/live-session", icon: "cast_connected", label: "Sessions" },
-  { href: "/recordings", icon: "video_library", label: "Oturum Kayıtları" },
-  { href: "/audit-logs", icon: "receipt_long", label: "Audit Logs" },
-  { href: "/access-policies", icon: "admin_panel_settings", label: "Access Policies" },
+  { href: "/support-queue", icon: "support_agent", label: "Destek Masası", desc: "Canlı talepler ve ekran" },
+  { href: "/dashboard", icon: "dashboard", label: "Genel Bakış", desc: "Sistem ve oturum istatistikleri" },
+  { href: "/live-session", icon: "cast_connected", label: "Aktif Oturumlar", desc: "Mevcut uzak bağlantılar" },
+  { href: "/devices", icon: "devices", label: "Cihazlar", desc: "Bağlanan bilgisayarlar" },
+  { href: "/recordings", icon: "video_library", label: "Kayıtlar", desc: "Oturum video geçmişi" },
+  { href: "/admin/technicians", icon: "manage_accounts", label: "Teknisyenler", desc: "Yetkili kullanıcılar" },
 ];
-
-const ACTIVE_CLASSES =
-  "flex items-center gap-space-sm px-space-sm py-space-sm transition-all bg-primary-container text-on-primary font-semibold rounded-lg shadow-[0_1px_4px_rgba(11,87,208,0.2)]";
-const INACTIVE_CLASSES =
-  "flex items-center gap-space-sm px-space-sm py-space-sm rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-on-surface transition-all";
 
 export default function TechnicianSidebar() {
   const pathname = usePathname();
@@ -41,72 +34,74 @@ export default function TechnicianSidebar() {
   };
 
   return (
-    <aside className="fixed left-0 top-0 h-full w-64 bg-surface-container-low shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-50 hidden lg:flex flex-col justify-between p-space-md">
-      <div className="flex flex-col gap-space-lg">
-        <div className="flex items-center gap-space-sm px-space-sm py-space-xs">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <span className="material-symbols-outlined text-on-primary text-[18px]">terminal</span>
+    <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-slate-200 shadow-sm z-50 hidden lg:flex flex-col justify-between">
+      {/* Brand Header */}
+      <div className="flex flex-col">
+        <div className="h-16 flex items-center gap-3 px-6 border-b border-slate-100">
+          <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
+            <span className="material-symbols-outlined text-[20px]">desktop_windows</span>
           </div>
           <div className="flex flex-col">
-            <span className="font-headline-sm text-headline-sm text-on-surface font-bold">HOMAK</span>
-            <span className="font-label-mono-sm text-label-mono-sm text-primary tracking-wider">ENTERPRISE</span>
+            <span className="font-bold text-slate-900 text-sm tracking-tight">HOMAK DESTEK</span>
+            <span className="text-[11px] font-semibold text-blue-600 tracking-wider">TEKNİSYEN PANELİ</span>
           </div>
         </div>
-        <nav className="flex flex-col gap-space-xs">
+
+        {/* Navigation Menu */}
+        <nav className="p-4 space-y-1.5">
+          <div className="px-3 pb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Ana Menü
+          </div>
           {NAV_ITEMS.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const isActive = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                aria-current={isActive ? "page" : undefined}
-                className={isActive ? ACTIVE_CLASSES : INACTIVE_CLASSES}
+                className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                  isActive
+                    ? "bg-blue-50 text-blue-600 font-semibold shadow-xs"
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                }`}
               >
-                <span className="material-symbols-outlined text-[20px]">{item.icon}</span>
-                <span className="font-action-btn text-action-btn">{item.label}</span>
+                <span
+                  className={`material-symbols-outlined text-[20px] ${
+                    isActive ? "text-blue-600" : "text-slate-400 group-hover:text-slate-600"
+                  }`}
+                >
+                  {item.icon}
+                </span>
+                <div className="flex flex-col">
+                  <span>{item.label}</span>
+                </div>
               </Link>
             );
           })}
         </nav>
       </div>
-      <div className="flex flex-col gap-space-xs">
-        <div className="flex flex-col gap-1 p-1 bg-surface-container rounded-lg">
-          <a
-            href="/downloads/HomakTechnicianConsole.exe"
-            download
-            className="flex items-center gap-space-xs px-space-sm py-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20 transition-all font-action-btn text-action-btn"
-            title="Teknisyen Konsol Uygulamasını İndirin (HomakTechnicianConsole.exe)"
-          >
-            <span className="material-symbols-outlined text-[16px]">computer</span>
-            <span className="text-[11px] font-semibold">Teknisyen Konsolu (.exe)</span>
-          </a>
-          <a
-            href="/downloads/HomakDesktopAgent.exe"
-            download
-            className="flex items-center gap-space-xs px-space-sm py-1.5 rounded bg-tertiary/10 text-tertiary hover:bg-tertiary/20 transition-all font-action-btn text-action-btn"
-            title="Müşteri Destek Agent Uygulamasını İndirin (HomakDesktopAgent.exe)"
-          >
-            <span className="material-symbols-outlined text-[16px]">download_for_offline</span>
-            <span className="text-[11px] font-semibold">Müşteri Agent (.exe)</span>
-          </a>
-        </div>
-        <div className="bg-surface-container p-space-sm rounded-lg flex items-center justify-between">
-          <div className="flex items-center gap-space-xs">
-            <span className="w-2 h-2 rounded-full bg-tertiary"></span>
-            <div className="flex flex-col">
-              <span className="font-label-mono-sm text-label-mono-sm text-on-surface font-semibold">
+
+      {/* User Footer & Logout */}
+      <div className="p-4 border-t border-slate-100 flex flex-col gap-2">
+        <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-xs shrink-0">
+              {technician?.displayName ? technician.displayName.charAt(0).toUpperCase() : "T"}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-semibold text-slate-800 truncate">
                 {technician?.displayName ?? "Teknisyen"}
               </span>
-              <span className="font-body-sm text-body-sm text-outline">
-                {technician?.department ?? "Homak Ops Core"}
+              <span className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                Çevrimiçi
               </span>
             </div>
           </div>
-          <span className="material-symbols-outlined text-outline text-[18px]">verified</span>
         </div>
+
         <button
           onClick={handleLogout}
-          className="flex items-center justify-center gap-space-xs px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container hover:text-error transition-all font-action-btn text-action-btn"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 hover:bg-rose-50 hover:text-rose-700 transition-colors"
         >
           <span className="material-symbols-outlined text-[18px]">logout</span>
           <span>Çıkış Yap</span>
