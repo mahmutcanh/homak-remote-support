@@ -193,13 +193,23 @@ export default function RemoteDesktopViewer({
       }
     });
 
-    socket.on("remote:displays", (data: { sessionId: string; displays: DisplayItem[]; activeDisplayIndex: number }) => {
-      if (data.sessionId !== sessionId) return;
-      if (data.displays && Array.isArray(data.displays)) {
-        setDisplays(data.displays);
-        setActiveDisplayIndex(data.activeDisplayIndex ?? 0);
+    const handleDisplaysUpdate = (data: any) => {
+      if (!data) return;
+      if (data.sessionId && data.sessionId !== sessionId) return;
+      const list = Array.isArray(data) ? data : (data.displays || data.screens || []);
+      if (Array.isArray(list) && list.length > 0) {
+        setDisplays(list);
+        if (typeof data.activeDisplayIndex === "number") {
+          setActiveDisplayIndex(data.activeDisplayIndex);
+        }
       }
-    });
+    };
+    socket.on("remote:displays", handleDisplaysUpdate);
+    socket.on("remote:screen-list", handleDisplaysUpdate);
+
+    // Request displays on connect
+    socket.emit("remote:get-displays", { sessionId });
+    socket.emit("remote:control", { sessionId, action: "get-displays" });
 
     socket.on("tech:presence-changed", (data: { sessionId: string; techCount: number }) => {
       if (data.sessionId !== sessionId) return;
@@ -351,10 +361,12 @@ export default function RemoteDesktopViewer({
     socketRef.current?.emit("remote:control", { sessionId, action: "block-input", enable: next });
   };
 
-    const switchDisplay = (displayIndex: number) => {
+  const switchDisplay = (displayIndex: number) => {
     if (!socketRef.current) return;
     setActiveDisplayIndex(displayIndex);
     socketRef.current.emit("remote:switch-display", { sessionId, displayIndex });
+    socketRef.current.emit("remote:control", { sessionId, action: "switch-display", displayIndex, screenIndex: displayIndex });
+    socketRef.current.emit("remote:control", { sessionId, action: "switch-screen", displayIndex, screenIndex: displayIndex });
   };
 
   const togglePrivacyScreen = () => {
@@ -601,40 +613,73 @@ export default function RemoteDesktopViewer({
           )}
 
           {/* Multi-Monitor Detection & Switcher */}
-          {displays.length > 1 ? (
-            <div className="flex items-center gap-1 bg-slate-950/90 border border-slate-700/80 rounded-xl p-0.5 px-1.5 shadow-xs">
-              <span className="flex items-center gap-1 text-[10px] font-black uppercase text-cyan-400 pl-0.5 pr-1">
-                <span className="material-symbols-outlined text-[14px]">devices</span>
-                <span>{displays.length} Ekran:</span>
-              </span>
-              <div className="flex items-center gap-1">
-                {displays.map((d) => (
+          <div className="flex items-center gap-1 bg-slate-950/90 border border-cyan-500/40 rounded-xl p-0.5 px-2 shadow-sm">
+            <span className="flex items-center gap-1 text-[11px] font-bold text-cyan-300 pr-1">
+              <span className="material-symbols-outlined text-[16px] text-cyan-400">desktop_windows</span>
+              <span className="hidden sm:inline">Monitör:</span>
+            </span>
+            <div className="flex items-center gap-1">
+              {displays.length > 0 ? (
+                displays.map((d, idx) => {
+                  const dispIdx = typeof d.index === "number" ? d.index : idx;
+                  const isActive = activeDisplayIndex === dispIdx;
+                  return (
+                    <button
+                      key={dispIdx}
+                      onClick={() => switchDisplay(dispIdx)}
+                      title={`${d.name || `Monitör ${dispIdx + 1}`} (${d.width}x${d.height})${d.isPrimary ? " - Ana Ekran" : ""}`}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        isActive
+                          ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
+                          : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[13px]">
+                        {d.isPrimary ? "star" : "monitor"}
+                      </span>
+                      <span>{dispIdx + 1}. Ekran</span>
+                    </button>
+                  );
+                })
+              ) : (
+                <>
                   <button
-                    key={d.index}
-                    onClick={() => switchDisplay(d.index)}
-                    title={`${d.name} (${d.width}x${d.height}) yayınına geç`}
+                    onClick={() => switchDisplay(0)}
                     className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeDisplayIndex === d.index
-                        ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/40 border border-cyan-400"
+                      activeDisplayIndex === 0
+                        ? "bg-cyan-600 text-white shadow-md border border-cyan-300"
                         : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
                     }`}
                   >
-                    <span className="material-symbols-outlined text-[13px]">
-                      {d.isPrimary ? "star" : "monitor"}
-                    </span>
-                    <span>{d.name.replace(" (Birincil)", "")}</span>
+                    <span className="material-symbols-outlined text-[13px]">star</span>
+                    <span>1. Ekran</span>
                   </button>
-                ))}
-              </div>
+                  <button
+                    onClick={() => switchDisplay(1)}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      activeDisplayIndex === 1
+                        ? "bg-cyan-600 text-white shadow-md border border-cyan-300"
+                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[13px]">monitor</span>
+                    <span>2. Ekran</span>
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => {
+                  socketRef.current?.emit("remote:get-displays", { sessionId });
+                  socketRef.current?.emit("remote:control", { sessionId, action: "get-displays" });
+                }}
+                title="Monitörleri Yenile / Algıla"
+                className="p-1 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-cyan-300 border border-slate-700/60 transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[14px]">sync</span>
+              </button>
             </div>
-          ) : (
-            displays.length === 1 && (
-              <div className="hidden lg:flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-slate-800/60 text-slate-400 border border-slate-700/50">
-                <span className="material-symbols-outlined text-[13px]">monitor</span>
-                <span>1 Monitör</span>
-              </div>
-            )
-          )}
+          </div>
           {connectionState === "waiting_consent" && (
             <span className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
