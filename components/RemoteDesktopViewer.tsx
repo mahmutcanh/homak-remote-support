@@ -211,6 +211,7 @@ export default function RemoteDesktopViewer({
         ]);
         if (data.sender !== "tech") {
           setUnreadChatCount((v) => v + 1);
+          setIsChatOpen(true);
         }
       },
     );
@@ -245,20 +246,28 @@ export default function RemoteDesktopViewer({
     });
   }, [sessionId]);
 
-  const sendChatMessage = useCallback(() => {
+  const sendChatMessage = useCallback((isAlertMode = false) => {
     const text = chatInput.trim();
     if (!text || !socketRef.current) return;
+
+    const isAlert = isAlertMode || /bildirim/i.test(text);
 
     socketRef.current.emit("chat:message", {
       sessionId,
       text,
       sender: "tech",
       senderName: getStoredTechnician()?.displayName || getStoredTechnician()?.username || "Teknisyen",
+      isAlert,
     });
 
     setChatMessages((prev) => [
       ...prev,
-      { text, sender: "tech", senderName: "Siz", timestamp: new Date().toISOString() },
+      {
+        text: isAlert ? `🔔 [BİLDİRİM] ${text}` : text,
+        sender: "tech",
+        senderName: isAlert ? "Siz (Bildirim)" : "Siz",
+        timestamp: new Date().toISOString(),
+      },
     ]);
     setChatInput("");
   }, [chatInput, sessionId]);
@@ -1084,17 +1093,28 @@ export default function RemoteDesktopViewer({
                   e.stopPropagation();
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    sendChatMessage();
+                    sendChatMessage(false);
                   }
                 }}
                 onKeyUp={(e) => e.stopPropagation()}
                 onKeyPress={(e) => e.stopPropagation()}
-                placeholder="Mesajınızı yazın..."
+                placeholder="Mesaj veya bildirim yazın..."
                 className="flex-1 bg-slate-800/90 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none focus:border-blue-500"
                 autoComplete="off"
               />
               <button
-                onClick={sendChatMessage}
+                type="button"
+                onClick={() => sendChatMessage(true)}
+                title="İstemci ekranında sesli ve açılır pencereli alert bildirimi gönder"
+                className="px-2.5 py-2 rounded-xl bg-amber-600/90 hover:bg-amber-500 text-white font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-xs"
+              >
+                <span className="material-symbols-outlined text-[15px]">notifications_active</span>
+                <span className="hidden sm:inline">Bildirim</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => sendChatMessage(false)}
+                title="Mesaj Gönder"
                 className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition-colors cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">send</span>
