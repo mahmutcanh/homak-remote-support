@@ -57,6 +57,34 @@ export default function RemoteDesktopViewer({
     setTimeout(() => setIsRefreshingDisplays(false), 1200);
   };
   const [resolution, setResolution] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  // --- 1. Dosya Transferi State ---
+  const [showFileModal, setShowFileModal] = useState<boolean>(false);
+  const [fileTab, setFileTab] = useState<"upload" | "browse">("upload");
+  const [uploadProgress, setUploadProgress] = useState<{ fileName: string; progress: number; status: string } | null>(null);
+  const [remoteFiles, setRemoteFiles] = useState<Array<{ name: string; isDir: boolean; size: number; path: string }>>([]);
+  const [isLoadingFiles, setIsLoadingFiles] = useState<boolean>(false);
+  const [currentRemoteDir, setCurrentRemoteDir] = useState<string>("desktop");
+  const [transferLogs, setTransferLogs] = useState<Array<{ text: string; time: string; type: "info" | "success" | "error" }>>([]);
+
+  // --- 2. Pano Senkronizasyonu State ---
+  const [clipboardToast, setClipboardToast] = useState<string | null>(null);
+
+  // --- 3. Ekrana Çizim & Lazer İşaretçi State ---
+  const [whiteboardMode, setWhiteboardMode] = useState<"normal" | "laser" | "pen">("normal");
+  const [penColor, setPenColor] = useState<string>("#facc15");
+  const whiteboardCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isDrawingRef = useRef<boolean>(false);
+  const currentStrokeRef = useRef<Array<{ x: number; y: number }>>([]);
+
+  // --- 4. Sistem Tanılama & Görev Yöneticisi State ---
+  const [diagnosticsTab, setDiagnosticsTab] = useState<"sysinfo" | "processes">("sysinfo");
+  const [processList, setProcessList] = useState<Array<{ pid: number; name: string; cpu: number; memoryMB: number }>>([]);
+  const [isLoadingProcesses, setIsLoadingProcesses] = useState<boolean>(false);
+  const [processSearch, setProcessSearch] = useState<string>("");
+
+  // --- 5. UAC / Yönetici Yetkisi Yükseltme State ---
+  const [isElevating, setIsElevating] = useState<boolean>(false);
+  const [elevateNotice, setElevateNotice] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState<string>("");
@@ -202,6 +230,69 @@ export default function RemoteDesktopViewer({
       if (data.text) {
         navigator.clipboard?.writeText(data.text).catch(() => {});
       }
+    });
+
+    // Dosya Transferi Dinleyicileri
+    socket.on("file:upload-progress", (data: { sessionId: string; fileName: string; progress: number; status: string; error?: string }) => {
+      if (data.sessionId !== sessionId) return;
+      setUploadProgress({ fileName: data.fileName, progress: data.progress, status: data.status });
+      if (data.status === "completed") {
+        setTransferLogs((prev) => [{ text: `✅ "${data.fileName}" başarıyla yüklendi!`, time: new Date().toLocaleTimeString(), type: "success" }, ...prev]);
+        setTimeout(() => setUploadProgress(null), 3500);
+      }
+    });
+
+    socket.on("file:list-result", (data: { sessionId: string; dir: string; files: any[]; error?: string }) => {
+      if (data.sessionId !== sessionId) return;
+      setIsLoadingFiles(false);
+      if (data.error) {
+        setTransferLogs((prev) => [{ text: `Hata: ${data.error}`, time: new Date().toLocaleTimeString(), type: "error" }, ...prev]);
+      } else {
+        setRemoteFiles(data.files || []);
+      }
+    });
+
+    socket.on("file:download-result", (data: { sessionId: string; fileName: string; content?: string; error?: string }) => {
+      if (data.sessionId !== sessionId) return;
+      if (data.error) {
+        alert("Dosya indirme hatası: " + data.error);
+        return;
+      }
+      if (data.content) {
+        try {
+          const byteCharacters = atob(data.content);
+          const byteNumbers = new Array(byteCharacters.length);
+          for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+          }
+          const byteArray = new Uint8Array(byteNumbers);
+          const blob = new Blob([byteArray], { type: "application/octet-stream" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = data.fileName || "downloaded_file";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          setTransferLogs((prev) => [{ text: `📥 "${data.fileName}" başarıyla indirildi.`, time: new Date().toLocaleTimeString(), type: "success" }, ...prev]);
+        } catch (e: any) {
+          alert("Dosya çözme hatası: " + e.message);
+        }
+      }
+    });
+
+    // Görev Yöneticisi Dinleyicisi
+    socket.on("remote:process-list", (data: { sessionId: string; processes: any[] }) => {
+      if (data.sessionId !== sessionId) return;
+      setIsLoadingProcesses(false);
+      setProcessList(data.processes || []);
+    });
+
+    // Beyaz Tahta & Lazer Dinleyicisi (Diğer teknisyenler için de yansıtma)
+    socket.on("remote:whiteboard", (data: { sessionId: string; drawData: any }) => {
+      if (data.sessionId !== sessionId || !data.drawData) return;
+      renderWhiteboardDataLocally(data.drawData);
     });
 
     socket.on("remote:stop", (data: { sessionId: string }) => {
@@ -456,6 +547,299 @@ export default function RemoteDesktopViewer({
     setVoiceActive(false);
   };
 
+  // --- Toast Bildirimi ---
+  const showToast = (msg: string) => {
+    setClipboardToast(msg);
+    setTimeout(() => setClipboardToast(null), 3500);
+  };
+
+  // --- 1. Dosya Transferi Fonksiyonları ---
+  const handleUploadFile = (file: File, targetDir: "desktop" | "downloads" = "desktop") => {
+    if (!file || !socketRef.current) return;
+    const CHUNK_SIZE = 60 * 1024; // 60KB
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const fileName = file.name;
+    const fileSize = file.size;
+
+    setUploadProgress({ fileName, progress: 0, status: "Hazırlanıyor..." });
+    setTransferLogs((prev) => [
+      { text: `📤 "${fileName}" yüklenmeye başlandı (${(fileSize / 1024).toFixed(1)} KB)...`, time: new Date().toLocaleTimeString(), type: "info" },
+      ...prev,
+    ]);
+
+    socketRef.current.emit("file:upload-start", {
+      sessionId,
+      fileName,
+      fileSize,
+      totalChunks,
+      targetDir,
+    });
+
+    let currentChunk = 0;
+    const reader = new FileReader();
+
+    const readNextChunk = () => {
+      const start = currentChunk * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const slice = file.slice(start, end);
+      reader.readAsArrayBuffer(slice);
+    };
+
+    reader.onload = (e) => {
+      if (!e.target?.result) return;
+      const arrayBuffer = e.target.result as ArrayBuffer;
+      let binary = "";
+      const bytes = new Uint8Array(arrayBuffer);
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64Data = btoa(binary);
+
+      socketRef.current?.emit("file:upload-chunk", {
+        sessionId,
+        fileName,
+        chunkIndex: currentChunk,
+        totalChunks,
+        data: base64Data,
+      });
+
+      currentChunk++;
+      if (currentChunk < totalChunks) {
+        setTimeout(readNextChunk, 6);
+      }
+    };
+
+    readNextChunk();
+  };
+
+  const fetchRemoteFiles = (dir: string = currentRemoteDir) => {
+    setCurrentRemoteDir(dir);
+    setIsLoadingFiles(true);
+    socketRef.current?.emit("file:list", { sessionId, dir });
+  };
+
+  const downloadRemoteFile = (filePath: string) => {
+    setTransferLogs((prev) => [
+      { text: `📥 Karşıdan dosya talep edildi: ${filePath}...`, time: new Date().toLocaleTimeString(), type: "info" },
+      ...prev,
+    ]);
+    socketRef.current?.emit("file:download", { sessionId, filePath });
+  };
+
+  // --- 2. Pano Senkronizasyonu Fonksiyonları ---
+  const sendClipboardToAgent = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) {
+        showToast("Panonuzda metin bulunamadı.");
+        return;
+      }
+      socketRef.current?.emit("remote:clipboard", { sessionId, text, sender: "tech" });
+      showToast(`📋 Pano (${text.length} karakter) istemciye gönderildi!`);
+    } catch {
+      const manual = prompt("İstemciye göndermek istediğiniz metni veya şifreyi yapıştırın:");
+      if (manual) {
+        socketRef.current?.emit("remote:clipboard", { sessionId, text: manual, sender: "tech" });
+        showToast("📋 Pano istemciye gönderildi!");
+      }
+    }
+  };
+
+  // --- 3. Ekrana Çizim & Lazer İşaretçi Fonksiyonları ---
+  const localStrokesRef = useRef<Array<any>>([]);
+  const localLaserRef = useRef<any>(null);
+
+  const renderWhiteboardDataLocally = (drawData: any) => {
+    const canvas = whiteboardCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+
+    if (drawData.type === "laser") {
+      localLaserRef.current = { x: drawData.x * w, y: drawData.y * h, alpha: 1.0 };
+    } else if (drawData.type === "line") {
+      const pts = (drawData.points || []).map((p: any) => ({ x: p.x * w, y: p.y * h }));
+      if (pts.length > 0) {
+        localStrokesRef.current.push({
+          points: pts,
+          color: drawData.color || "#facc15",
+          width: drawData.width || 4,
+          initialAlpha: 0.95,
+          expire: Date.now() + 4000,
+          duration: 4000,
+        });
+      }
+    } else if (drawData.type === "clear") {
+      localStrokesRef.current = [];
+      localLaserRef.current = null;
+      ctx.clearRect(0, 0, w, h);
+    }
+  };
+
+  useEffect(() => {
+    let animId: number;
+    const loop = () => {
+      const canvas = whiteboardCanvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const now = Date.now();
+
+          // Laser
+          if (localLaserRef.current) {
+            ctx.save();
+            ctx.globalAlpha = localLaserRef.current.alpha;
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = "#ff2222";
+            ctx.fillStyle = "#ff2222";
+            ctx.beginPath();
+            ctx.arc(localLaserRef.current.x, localLaserRef.current.y, 8, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.shadowBlur = 4;
+            ctx.shadowColor = "#ffffff";
+            ctx.fillStyle = "#ffffff";
+            ctx.beginPath();
+            ctx.arc(localLaserRef.current.x, localLaserRef.current.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            localLaserRef.current.alpha *= 0.92;
+            if (localLaserRef.current.alpha < 0.05) localLaserRef.current = null;
+          }
+
+          // Strokes
+          localStrokesRef.current = localStrokesRef.current.filter((s) => now < s.expire);
+          for (const s of localStrokesRef.current) {
+            const ratio = Math.max(0, (s.expire - now) / s.duration);
+            ctx.save();
+            ctx.globalAlpha = ratio * s.initialAlpha;
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = s.width;
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            ctx.shadowBlur = 6;
+            ctx.shadowColor = s.color;
+
+            ctx.beginPath();
+            for (let i = 0; i < s.points.length; i++) {
+              const pt = s.points[i];
+              if (i === 0) ctx.moveTo(pt.x, pt.y);
+              else ctx.lineTo(pt.x, pt.y);
+            }
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+      animId = requestAnimationFrame(loop);
+    };
+    animId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animId);
+  }, []);
+
+  const handleWhiteboardMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (whiteboardMode !== "pen") return;
+    const coords = getCanvasCoordinates(e);
+    if (!coords) return;
+    isDrawingRef.current = true;
+    currentStrokeRef.current = [{ x: coords.x, y: coords.y }];
+  };
+
+  const handleWhiteboardMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const coords = getCanvasCoordinates(e);
+    if (!coords) return;
+
+    if (whiteboardMode === "laser") {
+      socketRef.current?.emit("remote:whiteboard", {
+        sessionId,
+        drawData: { type: "laser", x: coords.x, y: coords.y },
+      });
+      renderWhiteboardDataLocally({ type: "laser", x: coords.x, y: coords.y });
+    } else if (whiteboardMode === "pen" && isDrawingRef.current) {
+      currentStrokeRef.current.push({ x: coords.x, y: coords.y });
+      // Live draw preview
+      const canvas = whiteboardCanvasRef.current;
+      if (canvas && currentStrokeRef.current.length > 1) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          const w = canvas.width;
+          const h = canvas.height;
+          const len = currentStrokeRef.current.length;
+          const p1 = currentStrokeRef.current[len - 2];
+          const p2 = currentStrokeRef.current[len - 1];
+          ctx.save();
+          ctx.strokeStyle = penColor;
+          ctx.lineWidth = 4;
+          ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(p1.x * w, p1.y * h);
+          ctx.lineTo(p2.x * w, p2.y * h);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+  };
+
+  const handleWhiteboardMouseUp = () => {
+    if (whiteboardMode === "pen" && isDrawingRef.current) {
+      isDrawingRef.current = false;
+      if (currentStrokeRef.current.length > 0) {
+        socketRef.current?.emit("remote:whiteboard", {
+          sessionId,
+          drawData: {
+            type: "line",
+            points: currentStrokeRef.current,
+            color: penColor,
+            width: 4,
+          },
+        });
+        renderWhiteboardDataLocally({
+          type: "line",
+          points: currentStrokeRef.current,
+          color: penColor,
+          width: 4,
+        });
+      }
+      currentStrokeRef.current = [];
+    }
+  };
+
+  const clearWhiteboard = () => {
+    socketRef.current?.emit("remote:whiteboard", { sessionId, drawData: { type: "clear" } });
+    renderWhiteboardDataLocally({ type: "clear" });
+    showToast("🧹 Çizimler temizlendi.");
+  };
+
+  // --- 4. Görev Yöneticisi Fonksiyonları ---
+  const fetchProcesses = () => {
+    setIsLoadingProcesses(true);
+    socketRef.current?.emit("remote:get-processes", { sessionId });
+  };
+
+  const killProcess = (pid: number, name: string) => {
+    if (!confirm(`[PID: ${pid}] "${name}" sürecini sonlandırmak istediğinize emin misiniz?`)) return;
+    socketRef.current?.emit("remote:kill-process", { sessionId, pid });
+    setProcessList((prev) => prev.filter((p) => p.pid !== pid));
+    showToast(`⚡ ${name} (PID: ${pid}) sonlandırıldı.`);
+  };
+
+  // --- 5. UAC / Yönetici Yetkisi Yükseltme ---
+  const requestAdminElevation = () => {
+    if (!confirm("İstemci ajanını Windows Yönetici (Administrator) yetkileriyle yeniden başlatmak istiyor musunuz?")) return;
+    setIsElevating(true);
+    setElevateNotice("İstemcide Windows UAC onay kutusu bekleniyor... Ajan birkaç saniye içinde aynı destek koduna bağlanacaktır.");
+    socketRef.current?.emit("remote:elevate", { sessionId });
+    setTimeout(() => {
+      setIsElevating(false);
+      setElevateNotice(null);
+    }, 12000);
+  };
+
   const copyInviteLink = () => {
     const origin = typeof window !== "undefined" ? window.location.origin : "https://remote.homaklab.com";
     const inviteUrl = `${origin}/support-queue?session=${sessionId}`;
@@ -543,6 +927,18 @@ export default function RemoteDesktopViewer({
 
     if (["Tab", "Backspace", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
       e.preventDefault();
+    }
+
+    // Auto Ctrl+V Clipboard Sync to Agent
+    if (e.ctrlKey && (e.key === "v" || e.key === "V")) {
+      e.preventDefault();
+      navigator.clipboard?.readText().then((text) => {
+        if (text) {
+          socketRef.current?.emit("remote:clipboard", { sessionId, text, sender: "tech" });
+          showToast(`📋 Pano (${text.length} karakter) istemciye yapıştırıldı!`);
+        }
+      }).catch(() => {});
+      return;
     }
 
     // Direct unicode single character input (letters, numbers, symbols, Turkish characters)
@@ -742,6 +1138,126 @@ export default function RemoteDesktopViewer({
               </button>
 
               {/* Admin Tools Dropdown / Quick Buttons */}
+              {/* File Transfer Button */}
+              <button
+                onClick={() => {
+                  setShowFileModal(true);
+                  if (remoteFiles.length === 0) fetchRemoteFiles("desktop");
+                }}
+                title="Çift Yönlü Dosya Transferi (Yükle / İndir)"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-amber-400">folder_open</span>
+                <span>Dosya Transferi</span>
+                {uploadProgress && (
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5"></span>
+                )}
+              </button>
+
+              {/* Clipboard Sync Button */}
+              <button
+                onClick={sendClipboardToAgent}
+                title="Yerel Panodaki Metni/Şifreyi Karşı Bilgisayara Gönder"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-cyan-400">content_paste_go</span>
+                <span>Panoyu Gönder</span>
+              </button>
+
+              {/* Whiteboard / Annotation Controls */}
+              <div className="flex items-center gap-1 bg-slate-950/80 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  onClick={() => setWhiteboardMode("normal")}
+                  title="Normal Fare / Klavye Kontrol Modu"
+                  className={`p-1.5 rounded-md text-xs transition-colors cursor-pointer ${
+                    whiteboardMode === "normal"
+                      ? "bg-blue-600 text-white shadow-xs"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[15px]">near_me</span>
+                </button>
+                <button
+                  onClick={() => setWhiteboardMode("laser")}
+                  title="Kırmızı Lazer İşaretçi Modu (Ekranda dikkat çekmek için)"
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    whiteboardMode === "laser"
+                      ? "bg-rose-600 text-white shadow-xs"
+                      : "text-slate-400 hover:text-rose-400"
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
+                  <span>Lazer</span>
+                </button>
+                <button
+                  onClick={() => setWhiteboardMode("pen")}
+                  title="Serbest Ekrana Çizim Modu (4 saniyede kendiliğinden solar)"
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                    whiteboardMode === "pen"
+                      ? "bg-amber-600 text-white shadow-xs"
+                      : "text-slate-400 hover:text-amber-400"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[14px]">edit</span>
+                  <span>Kalem</span>
+                </button>
+                {whiteboardMode === "pen" && (
+                  <div className="flex items-center gap-1 px-1 border-l border-slate-800">
+                    <button
+                      onClick={() => setPenColor("#facc15")}
+                      className={`w-3.5 h-3.5 rounded-full bg-yellow-400 ${penColor === "#facc15" ? "ring-2 ring-white" : ""}`}
+                    />
+                    <button
+                      onClick={() => setPenColor("#ef4444")}
+                      className={`w-3.5 h-3.5 rounded-full bg-red-500 ${penColor === "#ef4444" ? "ring-2 ring-white" : ""}`}
+                    />
+                    <button
+                      onClick={() => setPenColor("#3b82f6")}
+                      className={`w-3.5 h-3.5 rounded-full bg-blue-500 ${penColor === "#3b82f6" ? "ring-2 ring-white" : ""}`}
+                    />
+                  </div>
+                )}
+                {whiteboardMode !== "normal" && (
+                  <button
+                    onClick={clearWhiteboard}
+                    title="Tüm Çizimleri Temizle"
+                    className="p-1 rounded-md text-slate-400 hover:text-rose-400 text-xs"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">delete_sweep</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Diagnostics & Process Killer Button */}
+              <button
+                onClick={() => {
+                  setShowSysInfoModal(true);
+                  setDiagnosticsTab("sysinfo");
+                  requestSysInfo();
+                  fetchProcesses();
+                }}
+                title="Sistem Donanım & Görev Yöneticisi (Process Killer)"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[16px] text-indigo-400">insights</span>
+                <span>Sistem & Görevler</span>
+              </button>
+
+              {/* Elevate to Admin Button */}
+              <button
+                onClick={requestAdminElevation}
+                disabled={isElevating}
+                title="İstemciyi Windows Yönetici (Administrator / UAC) Yetkisiyle Yeniden Başlat"
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                  isElevating
+                    ? "bg-amber-950/80 border-amber-600 text-amber-300 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[15px] text-amber-400">shield_person</span>
+                <span className="hidden xl:inline">{isElevating ? "UAC Bekleniyor..." : "Yetki Yükselt"}</span>
+              </button>
+
               <button
                 onClick={sendCtrlAltDel}
                 title="Ctrl+Alt+Del Gönder"
@@ -966,6 +1482,20 @@ export default function RemoteDesktopViewer({
             </button>
           </div>
         )}
+
+        {/* Whiteboard & Laser Annotation Transparent Canvas Overlay */}
+        <canvas
+          ref={whiteboardCanvasRef}
+          width={canvasRef.current?.width || 1280}
+          height={canvasRef.current?.height || 720}
+          onMouseDown={handleWhiteboardMouseDown}
+          onMouseMove={handleWhiteboardMouseMove}
+          onMouseUp={handleWhiteboardMouseUp}
+          onContextMenu={(e) => e.preventDefault()}
+          className={`absolute inset-0 w-full h-full object-contain transition-all z-20 ${
+            whiteboardMode === "normal" ? "pointer-events-none" : "pointer-events-auto cursor-crosshair"
+          } ${connectionState === "connected" ? "block" : "hidden"}`}
+        />
 
         {/* Live Canvas */}
         <canvas
@@ -1267,61 +1797,367 @@ export default function RemoteDesktopViewer({
         )}
       </div>
 
-      {/* System Information Modal */}
-      {showSysInfoModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl text-slate-100 flex flex-col gap-4 animate-fadeIn">
+      {/* File Transfer Manager Modal */}
+      {showFileModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl text-slate-100 flex flex-col gap-4 animate-fadeIn max-h-[90vh] overflow-hidden">
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2 text-blue-400 font-bold text-sm">
-                <span className="material-symbols-outlined text-[22px]">devices</span>
-                <span>İstemci Sistem & Donanım Özeti</span>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-[20px]">folder_open</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-sm font-bold text-white">Çift Yönlü Dosya Yöneticisi & Transfer</span>
+                  <span className="text-[11px] text-slate-400">Teknisyen ve İstemci arasında güvenli dosya aktarımı</span>
+                </div>
               </div>
-              <button onClick={() => setShowSysInfoModal(false)} className="text-slate-400 hover:text-white">
+              <button onClick={() => setShowFileModal(false)} className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer">
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
             </div>
 
-            {sysInfo ? (
-              <div className="flex flex-col gap-2.5 text-xs font-mono">
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">Cihaz Adı:</span>
-                  <span className="font-bold text-white">{sysInfo.hostname}</span>
+            {/* Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+              <button
+                onClick={() => setFileTab("upload")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  fileTab === "upload" ? "bg-amber-500 text-slate-950 shadow-sm" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[16px]">upload</span>
+                <span>Dosya Gönder (Upload)</span>
+              </button>
+              <button
+                onClick={() => {
+                  setFileTab("browse");
+                  if (remoteFiles.length === 0) fetchRemoteFiles("desktop");
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  fileTab === "browse" ? "bg-amber-500 text-slate-950 shadow-sm" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[16px]">download</span>
+                <span>İstemci Dosyaları (İndir)</span>
+              </button>
+            </div>
+
+            {/* Tab 1: Upload */}
+            {fileTab === "upload" && (
+              <div className="flex flex-col gap-4 overflow-y-auto pr-1">
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      handleUploadFile(e.dataTransfer.files[0], "desktop");
+                    }
+                  }}
+                  className="border-2 border-dashed border-slate-700 hover:border-amber-400/80 rounded-2xl p-8 flex flex-col items-center justify-center gap-3 bg-slate-950/50 hover:bg-slate-950 transition-all text-center group"
+                >
+                  <div className="w-14 h-14 rounded-2xl bg-amber-500/10 text-amber-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                    <span className="material-symbols-outlined text-3xl">cloud_upload</span>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-bold text-slate-200">Dosyayı buraya sürükleyip bırakın</span>
+                    <span className="text-xs text-slate-400">veya bilgisayarınızdan seçin (Masaüstüne kaydedilir)</span>
+                  </div>
+                  <label className="mt-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold cursor-pointer transition-colors">
+                    Dosya Seç
+                    <input
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          handleUploadFile(e.target.files[0], "desktop");
+                        }
+                      }}
+                    />
+                  </label>
                 </div>
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">İşletim Sistemi:</span>
-                  <span className="text-emerald-400">{sysInfo.os}</span>
-                </div>
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">İşlemci (CPU):</span>
-                  <span className="text-blue-300">{sysInfo.cpu} ({sysInfo.cpuCores} Çekirdek)</span>
-                </div>
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">Bellek (RAM):</span>
-                  <span className="text-amber-300">{sysInfo.memory}</span>
-                </div>
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">Açık Kalma:</span>
-                  <span className="text-slate-200">{sysInfo.uptime}</span>
-                </div>
-                <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
-                  <span className="text-slate-400">Kullanıcı:</span>
-                  <span className="text-purple-300">{sysInfo.user}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="py-10 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
-                <span className="material-symbols-outlined text-3xl animate-spin text-blue-500">progress_activity</span>
-                <span>İstemciden sistem bilgileri alınıyor...</span>
+
+                {uploadProgress && (
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-col gap-2">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="font-bold text-white flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-[16px] text-amber-400">sync</span>
+                        {uploadProgress.fileName}
+                      </span>
+                      <span className="font-mono text-amber-400 font-bold">{uploadProgress.progress}%</span>
+                    </div>
+                    <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-500 to-emerald-400 transition-all duration-200"
+                        style={{ width: `${uploadProgress.progress}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] text-slate-400">Durum: {uploadProgress.status}</span>
+                  </div>
+                )}
               </div>
             )}
 
-            <button
-              onClick={() => setShowSysInfoModal(false)}
-              className="mt-2 w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs transition-colors cursor-pointer"
-            >
-              Kapat
-            </button>
+            {/* Tab 2: Browse & Download */}
+            {fileTab === "browse" && (
+              <div className="flex flex-col gap-3 overflow-y-auto pr-1">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                    <button
+                      onClick={() => fetchRemoteFiles("desktop")}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        currentRemoteDir === "desktop" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Masaüstü
+                    </button>
+                    <button
+                      onClick={() => fetchRemoteFiles("downloads")}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        currentRemoteDir === "downloads" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      İndirilenler
+                    </button>
+                    <button
+                      onClick={() => fetchRemoteFiles("documents")}
+                      className={`px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer ${
+                        currentRemoteDir === "documents" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      Belgeler
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => fetchRemoteFiles(currentRemoteDir)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    title="Yenile"
+                  >
+                    <span className={`material-symbols-outlined text-[16px] ${isLoadingFiles ? "animate-spin" : ""}`}>refresh</span>
+                  </button>
+                </div>
+
+                <div className="max-h-60 overflow-y-auto border border-slate-800 rounded-xl bg-slate-950">
+                  {isLoadingFiles ? (
+                    <div className="py-12 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                      <span className="material-symbols-outlined text-3xl animate-spin text-amber-400">progress_activity</span>
+                      <span>Klasör taranıyor...</span>
+                    </div>
+                  ) : remoteFiles.length === 0 ? (
+                    <div className="py-12 text-center text-slate-500 text-xs">Bu dizinde dosya bulunamadı veya yetki verilmedi.</div>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-900/80 text-slate-400 border-b border-slate-800 sticky top-0">
+                        <tr>
+                          <th className="p-2.5">Dosya Adı</th>
+                          <th className="p-2.5">Boyut</th>
+                          <th className="p-2.5 text-right">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono">
+                        {remoteFiles.map((file, i) => (
+                          <tr key={i} className="hover:bg-slate-900/50 transition-colors">
+                            <td className="p-2.5 flex items-center gap-2 text-slate-200">
+                              <span className="material-symbols-outlined text-[16px] text-amber-400">
+                                {file.isDir ? "folder" : "description"}
+                              </span>
+                              <span className="truncate max-w-xs">{file.name}</span>
+                            </td>
+                            <td className="p-2.5 text-slate-400">
+                              {file.isDir ? "-" : `${(file.size / 1024).toFixed(1)} KB`}
+                            </td>
+                            <td className="p-2.5 text-right">
+                              {!file.isDir && (
+                                <button
+                                  onClick={() => downloadRemoteFile(file.path)}
+                                  className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500 text-amber-300 hover:text-slate-950 text-[11px] font-bold transition-colors cursor-pointer"
+                                >
+                                  İndir
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Transfer Activity Logs */}
+            {transferLogs.length > 0 && (
+              <div className="flex flex-col gap-1 p-2.5 rounded-xl bg-slate-950 border border-slate-800 max-h-24 overflow-y-auto text-[11px] font-mono">
+                {transferLogs.slice(0, 5).map((log, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <span className="text-slate-500">{log.time}</span>
+                    <span className={log.type === "success" ? "text-emerald-400" : log.type === "error" ? "text-rose-400" : "text-slate-300"}>
+                      {log.text}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+        </div>
+      )}
+
+      {/* Diagnostics & Task Manager Modal */}
+      {showSysInfoModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl text-slate-100 flex flex-col gap-4 animate-fadeIn max-h-[90vh] overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm">
+                <span className="material-symbols-outlined text-[22px]">insights</span>
+                <span>Sistem Tanılama & Görev Yöneticisi</span>
+              </div>
+              <button onClick={() => setShowSysInfoModal(false)} className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 cursor-pointer">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {/* Diagnostics Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+              <button
+                onClick={() => setDiagnosticsTab("sysinfo")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  diagnosticsTab === "sysinfo" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[16px]">devices</span>
+                <span>Donanım & Sistem Özeti</span>
+              </button>
+              <button
+                onClick={() => {
+                  setDiagnosticsTab("processes");
+                  if (processList.length === 0) fetchProcesses();
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  diagnosticsTab === "processes" ? "bg-indigo-600 text-white shadow" : "text-slate-400 hover:text-white hover:bg-slate-800"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[16px]">memory</span>
+                <span>Çalışan Süreçler ({processList.length})</span>
+              </button>
+            </div>
+
+            {/* Tab 1: System Info */}
+            {diagnosticsTab === "sysinfo" && (
+              <div className="flex flex-col gap-3 overflow-y-auto">
+                {sysInfo ? (
+                  <div className="flex flex-col gap-2 text-xs font-mono">
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">Cihaz Adı:</span>
+                      <span className="font-bold text-white">{sysInfo.hostname}</span>
+                    </div>
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">İşletim Sistemi:</span>
+                      <span className="text-emerald-400 font-bold">{sysInfo.os}</span>
+                    </div>
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">İşlemci (CPU):</span>
+                      <span className="text-blue-300 font-bold">{sysInfo.cpu} ({sysInfo.cpuCores} Çekirdek)</span>
+                    </div>
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">Bellek (RAM):</span>
+                      <span className="text-amber-300 font-bold">{sysInfo.memory}</span>
+                    </div>
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">Açık Kalma Süresi:</span>
+                      <span className="text-slate-200">{sysInfo.uptime}</span>
+                    </div>
+                    <div className="flex justify-between p-2.5 rounded-xl bg-slate-800/70 border border-slate-700/50">
+                      <span className="text-slate-400">Kullanıcı:</span>
+                      <span className="text-purple-300">{sysInfo.user}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="py-10 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                    <span className="material-symbols-outlined text-3xl animate-spin text-blue-500">progress_activity</span>
+                    <span>İstemciden sistem bilgileri alınıyor...</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tab 2: Processes (Task Manager) */}
+            {diagnosticsTab === "processes" && (
+              <div className="flex flex-col gap-3 overflow-hidden">
+                <div className="flex items-center justify-between gap-2">
+                  <input
+                    type="text"
+                    placeholder="Süreç ara (örn: chrome, cmd)..."
+                    value={processSearch}
+                    onChange={(e) => setProcessSearch(e.target.value)}
+                    className="flex-1 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    onClick={fetchProcesses}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer"
+                    title="Yenile"
+                  >
+                    <span className={`material-symbols-outlined text-[16px] ${isLoadingProcesses ? "animate-spin" : ""}`}>refresh</span>
+                  </button>
+                </div>
+
+                <div className="max-h-64 overflow-y-auto border border-slate-800 rounded-xl bg-slate-950 font-mono text-xs">
+                  {isLoadingProcesses ? (
+                    <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
+                      <span className="material-symbols-outlined text-3xl animate-spin text-indigo-400">progress_activity</span>
+                      <span>Süreçler taranıyor...</span>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left">
+                      <thead className="bg-slate-900 border-b border-slate-800 sticky top-0 text-slate-400">
+                        <tr>
+                          <th className="p-2">PID</th>
+                          <th className="p-2">Süreç Adı</th>
+                          <th className="p-2">CPU</th>
+                          <th className="p-2">Bellek</th>
+                          <th className="p-2 text-right">İşlem</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60">
+                        {processList
+                          .filter((p) => !processSearch || p.name.toLowerCase().includes(processSearch.toLowerCase()))
+                          .map((proc) => (
+                            <tr key={proc.pid} className="hover:bg-slate-900/50 transition-colors">
+                              <td className="p-2 text-slate-500">{proc.pid}</td>
+                              <td className="p-2 text-slate-200 font-bold">{proc.name}</td>
+                              <td className="p-2 text-blue-400">{proc.cpu}%</td>
+                              <td className="p-2 text-amber-400">{proc.memoryMB} MB</td>
+                              <td className="p-2 text-right">
+                                <button
+                                  onClick={() => killProcess(proc.pid, proc.name)}
+                                  className="px-2 py-0.5 rounded bg-rose-500/20 hover:bg-rose-600 text-rose-300 hover:text-white text-[10px] font-bold transition-colors cursor-pointer"
+                                >
+                                  Sonlandır
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Clipboard Toast Notification */}
+      {clipboardToast && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl bg-slate-900/95 border border-slate-700 text-white text-xs font-semibold shadow-2xl flex items-center gap-2 animate-fadeIn backdrop-blur">
+          <span>{clipboardToast}</span>
+        </div>
+      )}
+
+      {/* Admin Elevation Banner Notice */}
+      {elevateNotice && (
+        <div className="absolute top-14 left-1/2 transform -translate-x-1/2 z-40 px-6 py-3 rounded-2xl bg-amber-500 text-slate-950 font-bold text-xs shadow-2xl flex items-center gap-2.5 animate-bounce">
+          <span className="material-symbols-outlined text-[20px]">shield_person</span>
+          <span>{elevateNotice}</span>
         </div>
       )}
 
