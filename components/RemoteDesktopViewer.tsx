@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { io, Socket } from "socket.io-client";
 import { WS_URL, getStoredToken, getStoredTechnician } from "@/lib/api";
 import { AudioDeviceModal } from "./AudioDeviceModal";
@@ -39,6 +39,30 @@ export default function RemoteDesktopViewer({
   const [fps, setFps] = useState<number>(0);
   const [displays, setDisplays] = useState<DisplayItem[]>([]);
   const [activeDisplayIndex, setActiveDisplayIndex] = useState<number>(0);
+  const [isRefreshingDisplays, setIsRefreshingDisplays] = useState<boolean>(false);
+
+  const displayListToRender = useMemo(() => {
+    if (displays && displays.length > 0) {
+      if (displays.length === 1) {
+        return [
+          displays[0],
+          { index: 1, id: 999, name: "2. Ekran", width: 0, height: 0, isPrimary: false }
+        ];
+      }
+      return displays;
+    }
+    return [
+      { index: 0, id: 1, name: "1. Ekran (Ana)", width: 0, height: 0, isPrimary: true },
+      { index: 1, id: 2, name: "2. Ekran", width: 0, height: 0, isPrimary: false }
+    ];
+  }, [displays]);
+
+  const refreshDisplays = () => {
+    setIsRefreshingDisplays(true);
+    socketRef.current?.emit("remote:get-displays", { sessionId });
+    socketRef.current?.emit("remote:control", { sessionId, action: "get-displays" });
+    setTimeout(() => setIsRefreshingDisplays(false), 1200);
+  };
   const [resolution, setResolution] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -612,74 +636,7 @@ export default function RemoteDesktopViewer({
             </>
           )}
 
-          {/* Multi-Monitor Detection & Switcher */}
-          <div className="flex items-center gap-1 bg-slate-950/90 border border-cyan-500/40 rounded-xl p-0.5 px-2 shadow-sm">
-            <span className="flex items-center gap-1 text-[11px] font-bold text-cyan-300 pr-1">
-              <span className="material-symbols-outlined text-[16px] text-cyan-400">desktop_windows</span>
-              <span className="hidden sm:inline">Monitör:</span>
-            </span>
-            <div className="flex items-center gap-1">
-              {displays.length > 0 ? (
-                displays.map((d, idx) => {
-                  const dispIdx = typeof d.index === "number" ? d.index : idx;
-                  const isActive = activeDisplayIndex === dispIdx;
-                  return (
-                    <button
-                      key={dispIdx}
-                      onClick={() => switchDisplay(dispIdx)}
-                      title={`${d.name || `Monitör ${dispIdx + 1}`} (${d.width}x${d.height})${d.isPrimary ? " - Ana Ekran" : ""}`}
-                      className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                        isActive
-                          ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
-                          : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                      }`}
-                    >
-                      <span className="material-symbols-outlined text-[13px]">
-                        {d.isPrimary ? "star" : "monitor"}
-                      </span>
-                      <span>{dispIdx + 1}. Ekran</span>
-                    </button>
-                  );
-                })
-              ) : (
-                <>
-                  <button
-                    onClick={() => switchDisplay(0)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeDisplayIndex === 0
-                        ? "bg-cyan-600 text-white shadow-md border border-cyan-300"
-                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[13px]">star</span>
-                    <span>1. Ekran</span>
-                  </button>
-                  <button
-                    onClick={() => switchDisplay(1)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                      activeDisplayIndex === 1
-                        ? "bg-cyan-600 text-white shadow-md border border-cyan-300"
-                        : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                    }`}
-                  >
-                    <span className="material-symbols-outlined text-[13px]">monitor</span>
-                    <span>2. Ekran</span>
-                  </button>
-                </>
-              )}
-
-              <button
-                onClick={() => {
-                  socketRef.current?.emit("remote:get-displays", { sessionId });
-                  socketRef.current?.emit("remote:control", { sessionId, action: "get-displays" });
-                }}
-                title="Monitörleri Yenile / Algıla"
-                className="p-1 rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-cyan-300 border border-slate-700/60 transition-colors cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[14px]">sync</span>
-              </button>
-            </div>
-          </div>
+          
           {connectionState === "waiting_consent" && (
             <span className="flex items-center gap-1.5 text-[11px] text-amber-400 font-mono">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
@@ -690,7 +647,52 @@ export default function RemoteDesktopViewer({
 
         {/* Center & Right: Action Controls */}
         <div className="flex items-center gap-1.5 flex-wrap">
-          {connectionState === "idle" && (
+          
+        {/* Floating Monitor Switcher Pill right on top of the remote video canvas */}
+        {connectionState === "connected" && (
+          <div className="absolute top-3 z-30 flex items-center gap-1.5 bg-slate-950/95 backdrop-blur-md border border-cyan-500/60 shadow-2xl shadow-black/90 rounded-2xl p-1 px-3 transition-all hover:scale-[1.02]">
+            <span className="material-symbols-outlined text-cyan-400 text-[18px]">desktop_windows</span>
+            <span className="text-xs font-black text-cyan-300 mr-1 hidden sm:inline">Monitör:</span>
+            {displayListToRender.map((disp, idx) => {
+              const dispIdx = typeof disp.index === "number" ? disp.index : idx;
+              const isActive = activeDisplayIndex === dispIdx;
+              return (
+                <button
+                  key={dispIdx}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    switchDisplay(dispIdx);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isActive
+                      ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
+                      : "bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[13px]">
+                    {disp.isPrimary ? "star" : "monitor"}
+                  </span>
+                  <span>{dispIdx + 1}. Ekran</span>
+                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
+                </button>
+              );
+            })}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                refreshDisplays();
+              }}
+              title="Monitörleri Yenile"
+              className="p-1 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <span className={`material-symbols-outlined text-[15px] ${isRefreshingDisplays ? "animate-spin text-cyan-400" : ""}`}>
+                sync
+              </span>
+            </button>
+          </div>
+        )}
+
+        {connectionState === "idle" && (
             <button
               onClick={startRemoteSession}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
@@ -855,6 +857,71 @@ export default function RemoteDesktopViewer({
         </div>
       </div>
 
+      
+      {/* DEDICATED HIGH-VISIBILITY MULTI-MONITOR SELECTOR BAR */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-slate-800 text-xs gap-3 flex-wrap z-10">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="flex items-center gap-1.5 font-black text-cyan-300 bg-cyan-950/90 border border-cyan-700/80 px-3 py-1.5 rounded-xl shadow-xs">
+            <span className="material-symbols-outlined text-[18px] text-cyan-400">devices</span>
+            <span className="uppercase tracking-wider text-[11px]">Monitör Seçimi:</span>
+          </div>
+
+          <div className="flex items-center gap-2 bg-slate-950/90 p-1 rounded-xl border border-slate-800 shadow-inner">
+            {displayListToRender.map((disp, idx) => {
+              const dispIdx = typeof disp.index === "number" ? disp.index : idx;
+              const isActive = activeDisplayIndex === dispIdx;
+              return (
+                <button
+                  key={dispIdx}
+                  onClick={() => switchDisplay(dispIdx)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-xs transition-all cursor-pointer ${
+                    isActive
+                      ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-lg shadow-blue-500/40 border border-cyan-300 scale-[1.02]"
+                      : "bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">
+                    {disp.isPrimary ? "star" : "desktop_windows"}
+                  </span>
+                  <span>{disp.name || `${dispIdx + 1}. Ekran`}</span>
+                  {disp.width > 0 && (
+                    <span className="text-[10px] font-mono opacity-75">
+                      ({disp.width}x{disp.height})
+                    </span>
+                  )}
+                  {isActive && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] bg-white/25 text-white font-black uppercase tracking-wider">
+                      Aktif
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+
+            <button
+              onClick={refreshDisplays}
+              title="Bağlı tüm monitörleri yeniden tara"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-cyan-300 border border-slate-700/60 transition-colors cursor-pointer"
+            >
+              <span className={`material-symbols-outlined text-[16px] ${isRefreshingDisplays ? "animate-spin text-cyan-400" : ""}`}>
+                sync
+              </span>
+              <span className="text-xs font-semibold">Taramayı Yenile</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+          <span className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-950/80 border border-slate-800">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span>Görüntülenen: <strong className="text-white">{activeDisplayIndex + 1}. Ekran</strong></span>
+          </span>
+          <span className="hidden lg:inline text-[11px] text-slate-500 font-mono">
+            {displays.length > 0 ? `(${displays.length} monitör algılandı)` : "(Çoklu ekran hazır)"}
+          </span>
+        </div>
+      </div>
+
       {/* Main Screen Canvas Viewport */}
       <div
         className={`relative w-full bg-slate-950 flex items-center justify-center overflow-hidden ${
@@ -862,6 +929,51 @@ export default function RemoteDesktopViewer({
         }`}
       >
         {/* State: Idle */}
+        
+        {/* Floating Monitor Switcher Pill right on top of the remote video canvas */}
+        {connectionState === "connected" && (
+          <div className="absolute top-3 z-30 flex items-center gap-1.5 bg-slate-950/95 backdrop-blur-md border border-cyan-500/60 shadow-2xl shadow-black/90 rounded-2xl p-1 px-3 transition-all hover:scale-[1.02]">
+            <span className="material-symbols-outlined text-cyan-400 text-[18px]">desktop_windows</span>
+            <span className="text-xs font-black text-cyan-300 mr-1 hidden sm:inline">Monitör:</span>
+            {displayListToRender.map((disp, idx) => {
+              const dispIdx = typeof disp.index === "number" ? disp.index : idx;
+              const isActive = activeDisplayIndex === dispIdx;
+              return (
+                <button
+                  key={dispIdx}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    switchDisplay(dispIdx);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isActive
+                      ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-cyan-600/50 border border-cyan-300"
+                      : "bg-slate-800/90 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[13px]">
+                    {disp.isPrimary ? "star" : "monitor"}
+                  </span>
+                  <span>{dispIdx + 1}. Ekran</span>
+                  {isActive && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>}
+                </button>
+              );
+            })}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                refreshDisplays();
+              }}
+              title="Monitörleri Yenile"
+              className="p-1 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <span className={`material-symbols-outlined text-[15px] ${isRefreshingDisplays ? "animate-spin text-cyan-400" : ""}`}>
+                sync
+              </span>
+            </button>
+          </div>
+        )}
+
         {connectionState === "idle" && (
           <div className="flex flex-col items-center gap-4 p-8 text-center max-w-md animate-fadeIn">
             <div className="w-16 h-16 rounded-3xl bg-blue-950/60 border border-blue-800/60 flex items-center justify-center text-blue-400 shadow-xl shadow-blue-950/50">

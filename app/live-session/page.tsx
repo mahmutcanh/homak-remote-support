@@ -279,6 +279,10 @@ export default function LiveSessionPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        <span className="hidden sm:flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-50 text-cyan-700 font-bold text-xs border border-cyan-200">
+                          <span className="material-symbols-outlined text-[15px] text-cyan-600">devices</span>
+                          Çoklu Monitör Destekli
+                        </span>
                         <span className="px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 font-mono font-bold text-xs">
                           PIN: {selectedSession.supportCode}
                         </span>
