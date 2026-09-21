@@ -45,6 +45,13 @@ export default function RemoteDesktopViewer({
   const [isRecordingAudio, setIsRecordingAudio] = useState<boolean>(true);
   const [selectedMicId, setSelectedMicId] = useState<string>("");
   const [selectedSpeakerId, setSelectedSpeakerId] = useState<string>("");
+  const [isVirtualKeyboardOpen, setIsVirtualKeyboardOpen] = useState<boolean>(false);
+  const [activeModifiers, setActiveModifiers] = useState<{ ctrl: boolean; shift: boolean; alt: boolean; win: boolean }>({
+    ctrl: false,
+    shift: false,
+    alt: false,
+    win: false,
+  });
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localAudioStreamRef = useRef<MediaStream | null>(null);
@@ -268,6 +275,41 @@ export default function RemoteDesktopViewer({
       setConnectionState("ended");
     }
   }, [sessionId]);
+
+  const toggleModifier = (mod: "ctrl" | "shift" | "alt" | "win") => {
+    setActiveModifiers((prev) => {
+      const nextVal = !prev[mod];
+      if (socketRef.current) {
+        socketRef.current.emit("remote:control", {
+          sessionId,
+          action: nextVal ? "keydown" : "keyup",
+          key: mod,
+        });
+      }
+      return { ...prev, [mod]: nextVal };
+    });
+  };
+
+  const releaseAllModifiers = () => {
+    ["ctrl", "shift", "alt", "win"].forEach((mod) => {
+      if (socketRef.current) {
+        socketRef.current.emit("remote:control", { sessionId, action: "keyup", key: mod });
+      }
+    });
+    setActiveModifiers({ ctrl: false, shift: false, alt: false, win: false });
+  };
+
+  const sendKeyCombo = (comboName: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit("remote:control", { sessionId, action: "combo", combo: comboName });
+    }
+  };
+
+  const sendSpecialKey = (key: string) => {
+    if (socketRef.current) {
+      socketRef.current.emit("remote:control", { sessionId, action: "keypress", key });
+    }
+  };
 
   const sendCtrlAltDel = useCallback(() => {
     if (socketRef.current && connectionState === "connected") {
@@ -571,6 +613,23 @@ export default function RemoteDesktopViewer({
                 )}
               </button>
 
+              {/* Virtual Keyboard Toggle Button */}
+              <button
+                onClick={() => setIsVirtualKeyboardOpen((v) => !v)}
+                title="Sanal Klavye, Çoklu Seçim & Kısayollar"
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
+                  isVirtualKeyboardOpen || activeModifiers.ctrl || activeModifiers.shift
+                    ? "bg-indigo-900/90 border-indigo-500 text-indigo-200 shadow-md shadow-indigo-950/40"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <span className="material-symbols-outlined text-[16px]">keyboard</span>
+                <span>Sanal Klavye</span>
+                {(activeModifiers.ctrl || activeModifiers.shift) && (
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse ml-0.5"></span>
+                )}
+              </button>
+
               {/* Security Tools (Privacy Screen & Input Block) */}
               <button
                 onClick={togglePrivacyScreen}
@@ -779,6 +838,203 @@ export default function RemoteDesktopViewer({
             <span className="material-symbols-outlined text-[16px]">fullscreen_exit</span>
             <span>Tam Ekrandan Çık</span>
           </button>
+        )}
+
+        {/* Floating Virtual Keyboard & Multi-Selection Bar */}
+        {connectionState === "connected" && isVirtualKeyboardOpen && (
+          <div className="absolute bottom-4 left-4 right-4 md:right-auto md:max-w-2xl bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 rounded-2xl shadow-2xl p-3.5 flex flex-col gap-2.5 z-30 animate-fadeIn">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-indigo-400 text-[18px]">keyboard</span>
+                <span className="text-xs font-bold text-white">Sanal Klavye & Kısayol İstasyonu</span>
+                <span className="hidden sm:inline text-[10px] text-slate-400 font-medium">
+                  • Çoklu seçim için Ctrl veya Shift&apos;i aktif tutarak ekranda tıklayın
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {(activeModifiers.ctrl || activeModifiers.shift || activeModifiers.alt || activeModifiers.win) && (
+                  <button
+                    onClick={releaseAllModifiers}
+                    className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800/60 transition-colors"
+                  >
+                    Tuşları Bırak
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsVirtualKeyboardOpen(false)}
+                  className="text-slate-400 hover:text-white p-0.5 rounded transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">close</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Row 1: Sticky Modifiers (For Multi-Selection & Combos) */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-bold text-slate-400 mr-1 uppercase">Seçim & Mod:</span>
+              <button
+                onClick={() => toggleModifier("ctrl")}
+                title="Ctrl tuşunu basılı tut (Birden fazla dosya/öğe seçimi için)"
+                className={`px-3 py-1 rounded-lg text-xs font-mono font-black border transition-all cursor-pointer flex items-center gap-1 ${
+                  activeModifiers.ctrl
+                    ? "bg-cyan-600 border-cyan-400 text-white shadow-md shadow-cyan-600/40 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <span>CTRL</span>
+                {activeModifiers.ctrl && <span className="text-[10px]">✓</span>}
+              </button>
+
+              <button
+                onClick={() => toggleModifier("shift")}
+                title="Shift tuşunu basılı tut (Aralık / Sıralı çoklu seçim için)"
+                className={`px-3 py-1 rounded-lg text-xs font-mono font-black border transition-all cursor-pointer flex items-center gap-1 ${
+                  activeModifiers.shift
+                    ? "bg-blue-600 border-blue-400 text-white shadow-md shadow-blue-600/40 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <span>SHIFT</span>
+                {activeModifiers.shift && <span className="text-[10px]">✓</span>}
+              </button>
+
+              <button
+                onClick={() => toggleModifier("alt")}
+                title="Alt tuşunu basılı tut"
+                className={`px-3 py-1 rounded-lg text-xs font-mono font-black border transition-all cursor-pointer flex items-center gap-1 ${
+                  activeModifiers.alt
+                    ? "bg-purple-600 border-purple-400 text-white shadow-md shadow-purple-600/40 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <span>ALT</span>
+                {activeModifiers.alt && <span className="text-[10px]">✓</span>}
+              </button>
+
+              <button
+                onClick={() => toggleModifier("win")}
+                title="Windows tuşunu basılı tut"
+                className={`px-3 py-1 rounded-lg text-xs font-mono font-black border transition-all cursor-pointer flex items-center gap-1 ${
+                  activeModifiers.win
+                    ? "bg-indigo-600 border-indigo-400 text-white shadow-md shadow-indigo-600/40 animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                }`}
+              >
+                <span>WIN</span>
+                {activeModifiers.win && <span className="text-[10px]">✓</span>}
+              </button>
+
+              <div className="h-4 w-px bg-slate-700 mx-1"></div>
+
+              {/* Essential Single Keys */}
+              <button
+                onClick={() => sendSpecialKey("{ESC}")}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700"
+              >
+                ESC
+              </button>
+              <button
+                onClick={() => sendSpecialKey("{TAB}")}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700"
+              >
+                TAB
+              </button>
+              <button
+                onClick={() => sendSpecialKey("{ENTER}")}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700"
+              >
+                ENTER
+              </button>
+              <button
+                onClick={() => sendSpecialKey("{DELETE}")}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700"
+              >
+                DEL
+              </button>
+              <button
+                onClick={() => sendSpecialKey("{BACKSPACE}")}
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700"
+              >
+                BKSP
+              </button>
+            </div>
+
+            {/* Row 2: Important Combinations (Combos) */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-800/80">
+              <span className="text-[10px] font-bold text-slate-400 mr-1 uppercase">Kısayollar:</span>
+              <button
+                onClick={() => sendKeyCombo("ctrl-shift-esc")}
+                title="Görev Yöneticisi Aç (Ctrl+Shift+Esc)"
+                className="px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/60 text-xs font-semibold cursor-pointer"
+              >
+                Ctrl+Shift+Esc
+              </button>
+              <button
+                onClick={() => sendKeyCombo("ctrl-alt-esc")}
+                title="Ctrl+Alt+Esc Gönder"
+                className="px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/60 text-xs font-semibold cursor-pointer"
+              >
+                Ctrl+Alt+Esc
+              </button>
+              <button
+                onClick={() => sendKeyCombo("alt-tab")}
+                title="Pencereler Arası Geçiş (Alt+Tab)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Alt+Tab
+              </button>
+              <button
+                onClick={() => sendKeyCombo("alt-f4")}
+                title="Aktif Pencereyi Kapat (Alt+F4)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Alt+F4
+              </button>
+              <button
+                onClick={() => sendKeyCombo("win-d")}
+                title="Masaüstünü Göster (Win+D)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Win+D
+              </button>
+              <button
+                onClick={() => sendKeyCombo("win-e")}
+                title="Dosya Gezgini Aç (Win+E)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Win+E
+              </button>
+              <button
+                onClick={() => sendKeyCombo("win-r")}
+                title="Çalıştır Aç (Win+R)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Win+R
+              </button>
+              <button
+                onClick={() => sendKeyCombo("ctrl-a")}
+                title="Tümünü Seç (Ctrl+A)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Ctrl+A
+              </button>
+              <button
+                onClick={() => sendKeyCombo("ctrl-c")}
+                title="Kopyala (Ctrl+C)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Ctrl+C
+              </button>
+              <button
+                onClick={() => sendKeyCombo("ctrl-v")}
+                title="Yapıştır (Ctrl+V)"
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium cursor-pointer"
+              >
+                Ctrl+V
+              </button>
+            </div>
+          </div>
         )}
 
         {/* Floating Live Chat Widget */}
