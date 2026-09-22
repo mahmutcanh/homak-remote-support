@@ -880,8 +880,15 @@ export default function RemoteDesktopViewer({
     return { x, y };
   };
 
+  const lastMouseMoveRef = useRef(0);
+
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (connectionState !== "connected" || !socketRef.current) return;
+    const now = performance.now();
+    // Throttle mouse moves to ~25ms (~40 FPS) to prevent socket buffer congestion & micro-stutters
+    if (now - lastMouseMoveRef.current < 25) return;
+    lastMouseMoveRef.current = now;
+
     const coords = getCanvasCoordinates(e);
     if (!coords) return;
     socketRef.current.emit("remote:control", { sessionId, action: "mousemove", x: coords.x, y: coords.y });
